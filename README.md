@@ -37,6 +37,7 @@ Each check shows as `<calling job> / <job in the reusable workflow>`, e.g.
 | `scripts-lint.yml` | shellcheck, shfmt, ruff, mypy, actionlint, hadolint and `lint-containers.py`, then the script tests | Runs in the calling repository's uv project: it keeps its own `lint` dependency group, `uv.lock` and ruff/mypy settings. |
 | `dependency-scan.yml` | OSV-Scanner over every lockfile, blocking on critical and fixable findings; a tracking issue on the schedule | |
 | `identity.yml` | commits use the current identity, without AI attribution | §5.10 |
+| `licence.yml` | every tracked `LICENSE` is the canonical GNU AGPL v3 text, byte for byte | Checked against a pinned SHA-256, offline. Needs only a checkout, so any repository can call it. |
 
 Each workflow's header comment documents its inputs, a calling example and
 the permissions the caller must grant.
@@ -56,8 +57,8 @@ the permissions the caller must grant.
 ### Scripts (`scripts/`)
 
 `lint-scripts.py`, `lint-containers.py`, `check-npm-licences.py`,
-`check-commit-identity.py`, `check-bench-gates.py`, `paths-changed.py` and
-`db-tests-passes.py`. They check the repository they are run from (the
+`check-commit-identity.py`, `check-licence.py`, `check-bench-gates.py`,
+`paths-changed.py` and `db-tests-passes.py`. They check the repository they are run from (the
 working directory), not this one. A reusable workflow fetches them from its
 own commit (`job.workflow_sha`), so a caller's pin covers the scripts too.
 To run one locally, from the root of the repository to check:

@@ -1,0 +1,47 @@
+name: Licence
+
+# Reusable: every tracked LICENSE file (the root one, the charts' and any
+# other) must be the canonical GNU AGPL v3 text, byte for byte
+# (scripts/check-licence.py, against a pinned SHA-256: nothing is fetched).
+# The AGPL text is never distributed modified. Needs nothing but a checkout,
+# so any repository can call it, whether or not it has a uv project.
+#
+#   jobs:
+#     licence:
+#       uses: Distant-Signal/ci/.github/workflows/licence.yml@<sha> # main
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: The runner label.
+        type: string
+        required: false
+        default: ubuntu-26.04
+
+permissions:
+  contents: read
+
+jobs:
+  licence:
+    name: LICENSE files are the canonical AGPL-3.0 text
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Fetch Distant-Signal/ci's scripts (this workflow's commit)
+        env:
+          CI_REPOSITORY: ${{ job.workflow_repository }}
+          CI_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/ds-ci"
+          git init -q "${dir}"
+          git -C "${dir}" fetch -q --depth=1 "${GITHUB_SERVER_URL}/${CI_REPOSITORY}.git" "${CI_SHA}"
+          git -C "${dir}" checkout -q FETCH_HEAD
+          echo "DS_CI=${dir}" >> "${GITHUB_ENV}"
+
+      # Stdlib only: the runner's python3 runs it.
+      - name: Check every LICENSE file
+        run: python3 "${DS_CI}/scripts/check-licence.py"

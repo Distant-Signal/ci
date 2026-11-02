@@ -9,6 +9,7 @@ name: CI
 #     ruff, mypy, actionlint over these workflows, hadolint over the
 #     fixture Dockerfile, lint-containers.py; then scripts/tests;
 #   - identity.yml on this repository's commits;
+#   - licence.yml: this repository's LICENSE is the canonical AGPL text;
 #   - dependency-scan.yml over uv.lock;
 #   - the Renovate preset and config, through renovate-config-validator;
 #   - actions/paths-changed against the fixtures;
@@ -41,6 +42,9 @@ jobs:
 
   commit-identity:
     uses: ./.github/workflows/identity.yml
+
+  licence:
+    uses: ./.github/workflows/licence.yml
 
   dependency-scan:
     uses: ./.github/workflows/dependency-scan.yml
