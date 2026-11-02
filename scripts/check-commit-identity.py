@@ -2,7 +2,7 @@
 # ruff: noqa: T201  # a CLI whose output (the findings) is stdout
 """Fail if a commit since BASE uses a retired identity or AI attribution.
 
-  uv run <ci>/scripts/check-commit-identity.py BASE [HEAD]
+  python3 <ci>/scripts/check-commit-identity.py BASE [HEAD]
 
 <ci> is a checkout of Distant-Signal/ci; run it inside the repository
 whose commits it checks.
@@ -30,7 +30,7 @@ enricher's Anthropic provider) are not attribution and pass.
 CI (the reusable identity.yml workflow) runs it on every pull request
 (BASE: the merge base with the target branch, HEAD: the PR's head) and
 push (BASE: the pre-push commit). Run it before pushing a branch:
-  uv run <ci>/scripts/check-commit-identity.py "$(git merge-base origin/main HEAD)"
+  python3 <ci>/scripts/check-commit-identity.py "$(git merge-base origin/main HEAD)"
 
 Findings are GitHub Actions `::error::` lines on stdout. A git failure
 (e.g. an unknown BASE) exits with git's status. Stdlib only.

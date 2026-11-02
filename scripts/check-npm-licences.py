@@ -2,7 +2,7 @@
 # ruff: noqa: T201  # a CLI whose output (the findings) is stdout
 """Fail when a frontend production dependency's licence isn't AGPL-compatible.
 
-  uv run <ci>/scripts/check-npm-licences.py [--lockfile frontend/package-lock.json]
+  python3 <ci>/scripts/check-npm-licences.py [--lockfile frontend/package-lock.json]
 
 <ci> is a checkout of Distant-Signal/ci; run it from the root of the
 repository it checks (--lockfile defaults to ./package-lock.json).

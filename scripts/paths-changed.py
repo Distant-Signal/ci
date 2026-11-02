@@ -2,7 +2,7 @@
 # ruff: noqa: T201  # a CLI whose answer is stdout
 """Say whether a push or pull request changed anything under given paths.
 
-  uv run <ci>/scripts/paths-changed.py --base SHA PATH...
+  python3 <ci>/scripts/paths-changed.py --base SHA PATH...
 
 <ci> is a checkout of Distant-Signal/ci; run it from the root of the
 repository whose paths it checks (the actions/paths-changed composite

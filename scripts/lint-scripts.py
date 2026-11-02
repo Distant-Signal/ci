@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Lint a repository's scripts, workflows and Dockerfiles.
 
-  uv run <ci>/scripts/lint-scripts.py [--fix]
+  uv run python <ci>/scripts/lint-scripts.py [--fix]
 
 <ci> is a checkout of Distant-Signal/ci. Run it from the root of the
-repository being checked, through that repository's own uv project: the
-tools come from its pyproject.toml `lint` dependency group (actionlint-py,
+repository being checked, in that repository's own uv project (`uv run
+python <script>`: `uv run <script>` would find the project beside the
+script instead). The tools come from its pyproject.toml `lint` dependency
+group (actionlint-py,
 hadolint-py, mypy, pyyaml, ruff, shellcheck-py, shfmt-py) and its uv.lock,
 and ruff and mypy read its own configuration. The reusable scripts-lint.yml
 workflow runs exactly this.

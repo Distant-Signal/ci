@@ -118,7 +118,7 @@ jobs:
       # Every production dependency's licence is AGPL-compatible (repo split
       # spec §6). Reads package-lock.json only; stdlib-only.
       - name: npm licences (check-npm-licences.py)
-        run: uv run --no-project "${DS_CI}/scripts/check-npm-licences.py" --lockfile package-lock.json
+        run: uv run --no-project python "${DS_CI}/scripts/check-npm-licences.py" --lockfile package-lock.json
 
       - name: Format check (prettier)
         run: npm run format:check

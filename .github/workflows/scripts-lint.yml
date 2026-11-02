@@ -25,7 +25,7 @@ name: Scripts lint
 # pyyaml, ruff, shellcheck-py, shfmt-py, pinned exactly) and its uv.lock
 # (`uv sync --locked` fails if that is stale). The interpreter is its
 # .python-version's. Locally, from that repository's root:
-#   uv run <ci>/scripts/lint-scripts.py
+#   uv run python <ci>/scripts/lint-scripts.py
 # with <ci> a checkout of Distant-Signal/ci.
 
 on:
@@ -93,7 +93,9 @@ jobs:
         run: uv sync --locked --group lint
 
       - name: Lint scripts
-        run: uv run --no-sync "${DS_CI}/scripts/lint-scripts.py"
+        # `uv run python <script>`, so uv finds the calling repository's
+        # project (from the working directory), not one beside the script.
+        run: uv run --no-sync python "${DS_CI}/scripts/lint-scripts.py"
 
       - name: Test scripts
         if: inputs.test-command != ''
@@ -103,4 +105,4 @@ jobs:
 
       - name: ignored benchmarks are env-gated
         if: inputs.check-bench-gates
-        run: uv run --no-sync "${DS_CI}/scripts/check-bench-gates.py"
+        run: uv run --no-sync python "${DS_CI}/scripts/check-bench-gates.py"

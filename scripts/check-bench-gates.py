@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fail if an ignored benchmark test would run without its env gate.
 
-  uv run <ci>/scripts/check-bench-gates.py [PATH ...]
+  python3 <ci>/scripts/check-bench-gates.py [PATH ...]
 
 <ci> is a checkout of Distant-Signal/ci; run it from the root of the
 Rust workspace it checks.

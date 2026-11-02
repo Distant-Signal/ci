@@ -63,7 +63,7 @@ own commit (`job.workflow_sha`), so a caller's pin covers the scripts too.
 To run one locally, from the root of the repository to check:
 
 ```sh
-uv run /path/to/Distant-Signal/ci/scripts/lint-scripts.py
+uv run python /path/to/Distant-Signal/ci/scripts/lint-scripts.py
 ```
 
 ### Renovate preset
