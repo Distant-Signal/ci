@@ -41,6 +41,11 @@ name: Image
 # --repo <owner>/<repo> --signer-workflow
 # Distant-Signal/ci/.github/workflows/image.yml`.
 #
+# Labels: org.opencontainers.image.title, .source, .url and .licenses from
+# the inputs and the calling repository, then the caller's own `labels`
+# (e.g. the repo split spec's org.distant-signal.core-version, §5.1), checked
+# and assembled by scripts/image-labels.py from this workflow's commit.
+#
 # Tags: docker/metadata-action's branch, tag and pull request tags, plus
 # `type=sha` (an immutable `sha-<short-sha>` tag) for a chart to pin. No
 # `type=schedule`: a weekly rebuild gets the same tags as a push of the same
@@ -111,6 +116,15 @@ on:
         type: string
         required: false
         default: AGPL-3.0-or-later
+      labels:
+        description: >-
+          More image labels, newline-separated key=value, after image.yml's
+          own (title, source, url, licenses), which they may not set. Keep
+          the values static: a label that changes every run changes every
+          digest (scripts/image-labels.py).
+        type: string
+        required: false
+        default: ""
       build-args:
         description: docker/build-push-action's build-args (newline-separated KEY=value).
         type: string
@@ -187,6 +201,36 @@ jobs:
           } >> "${GITHUB_ENV}"
           echo "image=${base}/${SERVICE}" >> "${GITHUB_OUTPUT}"
 
+      # This workflow's scripts, from its own commit, outside the workspace
+      # (so the build context never sees them).
+      - name: Fetch Distant-Signal/ci's scripts (this workflow's commit)
+        env:
+          CI_REPOSITORY: ${{ job.workflow_repository }}
+          CI_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/ds-ci"
+          git init -q "${dir}"
+          git -C "${dir}" fetch -q --depth=1 "${GITHUB_SERVER_URL}/${CI_REPOSITORY}.git" "${CI_SHA}"
+          git -C "${dir}" checkout -q FETCH_HEAD
+          echo "DS_CI=${dir}" >> "${GITHUB_ENV}"
+
+      # The label set, checked: the extra labels go through a file, never a
+      # shell word, and a bad one fails here rather than in the build.
+      - name: Assemble the labels
+        id: labels
+        env:
+          TITLE: ${{ inputs.title-prefix }}/${{ inputs.service }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+          LICENSES: ${{ inputs.licenses }}
+          EXTRA_LABELS: ${{ inputs.labels }}
+        run: |
+          set -euo pipefail
+          extra="${RUNNER_TEMP}/image-labels.txt"
+          printf '%s\n' "${EXTRA_LABELS}" > "${extra}"
+          python3 "${DS_CI}/scripts/image-labels.py" \
+            --title "${TITLE}" --source "${SOURCE}" --licenses "${LICENSES}" --extra-file "${extra}"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -235,11 +279,7 @@ jobs:
           provenance: false
           build-args: ${{ inputs.build-args }}
           tags: ${{ steps.meta.outputs.tags }}
-          labels: |
-            org.opencontainers.image.title=${{ inputs.title-prefix }}/${{ inputs.service }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.licenses=${{ inputs.licenses }}
+          labels: ${{ steps.labels.outputs.labels }}
           cache-from: |
             type=registry,ref=${{ env.CACHE }}
             ${{ inputs.extra-cache-from }}
