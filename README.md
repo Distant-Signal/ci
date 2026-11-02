@@ -32,7 +32,7 @@ Each check shows as `<calling job> / <job in the reusable workflow>`, e.g.
 | `rust-ci.yml` | clippy in both feature sets (`-D warnings`), the MSRV check, cargo-deny, rustfmt, build and test | Inputs: toolchain, MSRV, apt packages, an extra test command. |
 | `rust-db-tests.yml` | builds the DB test archive once, then one job per pass against its own Postgres and Redis | The archive command and the passes come from the repository's `.github/db-tests.toml` (format in `scripts/db-tests-passes.py`). The service images are inputs. |
 | `node-ci.yml` | `npm ci`, ESLint, the npm licence gate, Prettier, `tsc --noEmit`, extra npm scripts, `npm test`, `npm run build` | |
-| `image.yml` | builds one image; when publishing, pushes it to `ghcr.io/<owner>/images/<service>`, attests provenance, signs it and records its digest | Call it from a matrix. Reproducible digests, registry layer cache. |
+| `image.yml` | builds one image; when publishing, pushes it to `ghcr.io/<owner>/images/<service>`, attests provenance, signs it and records its digest | Call it from a matrix. Reproducible digests, registry layer cache. Extra labels through the `labels` input. |
 | `helm-chart.yml` | lints a chart; when publishing, packages it as `<version>+build.<run>.sha.<sha>` and pushes it to `ghcr.io/<owner>/charts` | Doesn't sign: sign in your own job (below). |
 | `scripts-lint.yml` | shellcheck, shfmt, ruff, mypy, actionlint, hadolint and `lint-containers.py`, then the script tests | Runs in the calling repository's uv project: it keeps its own `lint` dependency group, `uv.lock` and ruff/mypy settings. |
 | `dependency-scan.yml` | OSV-Scanner over every lockfile, blocking on critical and fixable findings; a tracking issue on the schedule | |
@@ -58,7 +58,7 @@ the permissions the caller must grant.
 
 `lint-scripts.py`, `lint-containers.py`, `check-npm-licences.py`,
 `check-commit-identity.py`, `check-licence.py`, `check-bench-gates.py`,
-`paths-changed.py` and `db-tests-passes.py`. They check the repository they are run from (the
+`paths-changed.py`, `db-tests-passes.py` and `image-labels.py`. They check the repository they are run from (the
 working directory), not this one. A reusable workflow fetches them from its
 own commit (`job.workflow_sha`), so a caller's pin covers the scripts too.
 To run one locally, from the root of the repository to check:
