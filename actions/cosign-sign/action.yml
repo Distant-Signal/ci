@@ -1,0 +1,68 @@
+name: cosign sign (keyless, retried)
+description: >-
+  Sign an OCI artifact by digest with cosign's keyless (OIDC) signing, retrying
+  a failed attempt, and optionally verify the signature against an identity.
+  cosign must already be on PATH (sigstore/cosign-installer) and the job needs
+  `id-token: write` and registry credentials.
+
+# A composite action, not a reusable workflow, on purpose: it runs inside the
+# calling job, so the Fulcio certificate's identity stays the calling
+# workflow's (https://github.com/<owner>/<repo>/.github/workflows/<file>@<ref>).
+# Flux verifies the chart against that identity (repo split spec §5.9). A
+# reusable workflow's job signs as the reusable workflow instead.
+#
+# Why retried: cosign retries a Rekor upload that times out, and when the
+# first attempt had in fact landed the retry fails with 409
+# createLogEntryConflict (seen on main, 2026-10-30). A fresh `cosign sign`
+# makes new ephemeral keys, so its entry can't conflict.
+
+inputs:
+  ref:
+    description: What to sign, by digest (`<registry>/<path>@sha256:<digest>`), never a tag.
+    required: true
+  attempts:
+    description: How many times to try `cosign sign` before failing.
+    required: false
+    default: "3"
+  verify-identity:
+    description: >-
+      When set, `cosign verify` the signature against this certificate
+      identity after signing, so a broken signing setup fails here rather
+      than at install time.
+    required: false
+    default: ""
+  verify-issuer:
+    description: The OIDC issuer `cosign verify` expects.
+    required: false
+    default: https://token.actions.githubusercontent.com
+
+runs:
+  using: composite
+  steps:
+    - name: cosign sign${{ inputs.verify-identity != '' && ' and verify' || '' }}
+      shell: bash
+      env:
+        REF: ${{ inputs.ref }}
+        ATTEMPTS: ${{ inputs.attempts }}
+        IDENTITY: ${{ inputs.verify-identity }}
+        ISSUER: ${{ inputs.verify-issuer }}
+      run: |
+        set -euo pipefail
+        if [[ ! "${REF}" =~ @sha256:[0-9a-f]{64}$ ]]; then
+          echo "::error::cosign-sign signs by digest only; got '${REF}'" >&2
+          exit 1
+        fi
+        attempt=1
+        until cosign sign --yes "${REF}"; do
+          if ((attempt >= ATTEMPTS)); then
+            exit 1
+          fi
+          echo "::warning::cosign sign attempt ${attempt} failed"
+          sleep $((attempt * 10))
+          attempt=$((attempt + 1))
+        done
+        if [[ -n "${IDENTITY}" ]]; then
+          cosign verify "${REF}" \
+            --certificate-oidc-issuer "${ISSUER}" \
+            --certificate-identity "${IDENTITY}" > /dev/null
+        fi

@@ -1,0 +1,145 @@
+name: Node CI
+
+# Reusable: lint, licence-check, format-check, type-check, test and build an
+# npm project. In order: `npm ci`, `npm run lint` (ESLint), the optional
+# repository check, the production dependencies' licences
+# (scripts/check-npm-licences.py: AGPL-compatible), `npm run format:check`
+# (Prettier), `npx tsc --noEmit`, the optional extra npm scripts, `npm test`
+# and `npm run build`. The package.json must define `lint`, `format:check`,
+# `test` and `build`.
+#
+#   jobs:
+#     frontend:
+#       uses: Distant-Signal/ci/.github/workflows/node-ci.yml@<sha> # main
+#       with:
+#         working-directory: frontend
+#
+# End-to-end tests are not here: they need the repository's own services.
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: The npm project's directory (holding package.json and package-lock.json).
+        type: string
+        required: false
+        default: .
+      node-version:
+        description: actions/setup-node's node-version.
+        type: string
+        required: false
+        default: "22"
+      repo-check-name:
+        description: The step name shown for repo-check-command.
+        type: string
+        required: false
+        default: Repository check
+      repo-check-command:
+        description: >-
+          Run from the repository root after `npm run lint`, with
+          node_modules installed and uv set up (e.g. a copy checker that
+          reads the built pages). Empty: nothing.
+        type: string
+        required: false
+        default: ""
+      extra-npm-scripts:
+        description: >-
+          npm scripts run after `tsc --noEmit` and before `npm test`,
+          space-separated (e.g. `typecheck:scripts`).
+        type: string
+        required: false
+        default: ""
+      uv-version:
+        description: uv, for the licence check and repo-check-command.
+        type: string
+        required: false
+        # renovate: datasource=pypi depName=uv
+        default: "0.13.6"
+      runs-on:
+        description: The runner label.
+        type: string
+        required: false
+        default: ubuntu-26.04
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    name: npm lint, licences, prettier, tsc, test, build
+    runs-on: ${{ inputs.runs-on }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Fetch Distant-Signal/ci's scripts (this workflow's commit)
+        working-directory: .
+        env:
+          CI_REPOSITORY: ${{ job.workflow_repository }}
+          CI_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/ds-ci"
+          git init -q "${dir}"
+          git -C "${dir}" fetch -q --depth=1 "${GITHUB_SERVER_URL}/${CI_REPOSITORY}.git" "${CI_SHA}"
+          git -C "${dir}" checkout -q FETCH_HEAD
+          echo "DS_CI=${dir}" >> "${GITHUB_ENV}"
+
+      - name: Install Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Lint (eslint)
+        run: npm run lint
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ inputs.uv-version }}
+          # Nothing to cache: no dependencies are installed.
+          enable-cache: false
+
+      - name: ${{ inputs.repo-check-name }}
+        if: inputs.repo-check-command != ''
+        working-directory: .
+        env:
+          COMMAND: ${{ inputs.repo-check-command }}
+        run: bash -euo pipefail -c "${COMMAND}"
+
+      # Every production dependency's licence is AGPL-compatible (repo split
+      # spec §6). Reads package-lock.json only; stdlib-only.
+      - name: npm licences (check-npm-licences.py)
+        run: uv run --no-project "${DS_CI}/scripts/check-npm-licences.py" --lockfile package-lock.json
+
+      - name: Format check (prettier)
+        run: npm run format:check
+
+      - name: Typecheck (tsc --noEmit)
+        run: npx tsc --noEmit
+
+      - name: npm run ${{ inputs.extra-npm-scripts }}
+        if: inputs.extra-npm-scripts != ''
+        env:
+          SCRIPTS: ${{ inputs.extra-npm-scripts }}
+        run: |
+          set -euo pipefail
+          read -r -a scripts <<< "${SCRIPTS}"
+          for script in "${scripts[@]}"; do
+            echo "== npm run ${script}"
+            npm run "${script}"
+          done
+
+      - name: npm test
+        run: npm test
+
+      - name: npm run build
+        run: npm run build

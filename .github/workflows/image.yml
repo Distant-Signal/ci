@@ -1,0 +1,306 @@
+name: Image
+
+# Reusable: build one container image and, when `publish` is true, push it
+# to GHCR, attest its build provenance, sign it (keyless cosign, retried)
+# and output its digest. Call it once per image, from a matrix:
+#
+#   jobs:
+#     build-and-push:
+#       name: ${{ matrix.service }}
+#       strategy:
+#         fail-fast: false
+#         matrix:
+#           include:
+#             - { service: api, dockerfile: docker/api.Dockerfile, target: "" }
+#       uses: Distant-Signal/ci/.github/workflows/image.yml@<sha> # main
+#       permissions:
+#         contents: read
+#         packages: write
+#         id-token: write # cosign and the provenance attestation
+#         attestations: write
+#       with:
+#         service: ${{ matrix.service }}
+#         dockerfile: ${{ matrix.dockerfile }}
+#         target: ${{ matrix.target }}
+#         publish: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+#
+# Paths (repo split spec §5.9): the image is
+# ghcr.io/<owner>/<registry-path>/<service>, <owner> being the calling
+# repository's owner, lowercased (GHCR refuses upper case); its layer cache
+# is ghcr.io/<owner>/<registry-path>/buildcache:<service>. Every DS
+# repository pushes to images/<service>, so moving a service between
+# repositories changes nothing in the chart.
+#
+# Signing identity: a reusable workflow's job signs as the reusable
+# workflow, so the image signature's certificate identity is
+# https://github.com/Distant-Signal/ci/.github/workflows/image.yml@<sha>,
+# not the calling workflow. Nothing verifies image signatures today (Flux
+# verifies only the chart, which its caller signs in its own job with
+# actions/cosign-sign). The provenance attestation records the calling
+# repository as its source: `gh attestation verify oci://<image>@<digest>
+# --repo <owner>/<repo> --signer-workflow
+# Distant-Signal/ci/.github/workflows/image.yml`.
+#
+# Tags: docker/metadata-action's branch, tag and pull request tags, plus
+# `type=sha` (an immutable `sha-<short-sha>` tag) for a chart to pin. No
+# `type=schedule`: a weekly rebuild gets the same tags as a push of the same
+# commit. Its labels are not used: `created` and `revision` would make
+# every push a new image config, so a new digest, for byte-identical layers.
+#
+# Layer cache: a registry cache per image (not `type=gha`: the 10 GB GHA
+# cache overflowed). Every run reads it; only publishing runs write it, so a
+# pull request can never poison what main builds from. image-manifest=true +
+# oci-mediatypes=true store it as an OCI image manifest, which every
+# registry accepts. Each write untags the previous cache manifest; prune
+# untagged versions on a schedule (actions/delete-package-versions).
+#
+# Reproducible digests (an unchanged image keeps its digest, so its
+# Deployment doesn't restart): static labels only; `provenance: false` (the
+# attestation is published separately, leaving the image digest alone);
+# `rewrite-timestamp=true` with SOURCE_DATE_EPOCH, so even a cold-cache
+# rebuild of the same inputs produces the same layers and config. That
+# output option needs BuildKit v0.13+, which the job checks.
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: The image's name under registry-path, and its cache tag.
+        type: string
+        required: true
+      dockerfile:
+        description: The Dockerfile, relative to the repository root (the build context).
+        type: string
+        required: true
+      target:
+        description: The build stage to stop at (empty for the last stage).
+        type: string
+        required: false
+        default: ""
+      publish:
+        description: >-
+          Push the image and its cache, attest, sign, and upload the digest
+          artifact. Never on a pull request.
+        type: boolean
+        required: false
+        default: false
+      rebuild-runtime:
+        description: >-
+          Rebuild the runtime stage without the cache (`target`, else
+          `runtime-stage`), so its package installs pick up security updates.
+        type: boolean
+        required: false
+        default: false
+      runtime-stage:
+        description: The runtime stage's name when `target` is empty, for rebuild-runtime.
+        type: string
+        required: false
+        default: runtime
+      registry-path:
+        description: The path under ghcr.io/<owner>/.
+        type: string
+        required: false
+        default: images
+      title-prefix:
+        description: The org.opencontainers.image.title label is <title-prefix>/<service>.
+        type: string
+        required: false
+        default: distant-signal
+      licenses:
+        description: The org.opencontainers.image.licenses label (SPDX).
+        type: string
+        required: false
+        default: AGPL-3.0-or-later
+      build-args:
+        description: docker/build-push-action's build-args (newline-separated KEY=value).
+        type: string
+        required: false
+        default: ""
+      extra-cache-from:
+        description: >-
+          More cache sources, newline-separated, after this image's own
+          (e.g. an old registry path's cache during a move). A missing ref
+          is skipped, not an error.
+        type: string
+        required: false
+        default: ""
+      record-digest:
+        description: >-
+          When publishing, upload `<service>=<digest>` as the artifact
+          image-digest-<service> (file digest-<service>.txt), for a later
+          job in the run (e.g. a chart that pins every image's digest).
+        type: boolean
+        required: false
+        default: true
+      source-date-epoch:
+        description: SOURCE_DATE_EPOCH for reproducible images. A constant, not the commit time.
+        type: string
+        required: false
+        default: "0"
+      runs-on:
+        description: The runner label.
+        type: string
+        required: false
+        default: ubuntu-26.04
+    outputs:
+      image:
+        description: The image's repository (ghcr.io/<owner>/<registry-path>/<service>).
+        value: ${{ jobs.image.outputs.image }}
+      digest:
+        description: The built image's digest (pushed when publishing).
+        value: ${{ jobs.image.outputs.digest }}
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: image
+    runs-on: ${{ inputs.runs-on }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # cosign's keyless signing, and the attestation's
+      attestations: write # the build provenance attestation
+    outputs:
+      image: ${{ steps.paths.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
+    env:
+      REGISTRY: ghcr.io
+      SOURCE_DATE_EPOCH: ${{ inputs.source-date-epoch }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Derive the GHCR paths
+        id: paths
+        env:
+          REGISTRY_PATH: ${{ inputs.registry-path }}
+          SERVICE: ${{ inputs.service }}
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          base="${REGISTRY}/${owner}/${REGISTRY_PATH}"
+          {
+            echo "IMAGE=${base}/${SERVICE}"
+            echo "CACHE=${base}/buildcache:${SERVICE}"
+          } >> "${GITHUB_ENV}"
+          echo "image=${base}/${SERVICE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Check BuildKit supports rewrite-timestamp
+        run: |
+          set -euo pipefail
+          version="$(docker buildx inspect | sed -n 's/^BuildKit version: *v//p' | head -n 1)"
+          oldest="$(printf '%s\n' 0.13.0 "${version}" | sort -V | head -n 1)"
+          echo "BuildKit ${version}"
+          if [[ -z "${version}" || "${oldest}" != "0.13.0" ]]; then
+            echo "::error::BuildKit '${version}' is older than v0.13 (or unknown); rewrite-timestamp needs v0.13+" >&2
+            exit 1
+          fi
+
+      # On every event, pull requests included: the build reads its layer
+      # cache from the registry. A pull request's token can still only read
+      # (a fork's gets no packages:write). The cache package should be
+      # readable by fork PRs too; while it isn't they build uncached, which
+      # is slower, not broken.
+      - name: Log into ${{ env.REGISTRY }}
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags)
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=ref,event=pr
+            type=sha
+
+      - name: Build${{ inputs.publish && ' and push' || '' }} image
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ${{ inputs.dockerfile }}
+          target: ${{ inputs.target }}
+          outputs: type=image,push=${{ inputs.publish }},rewrite-timestamp=true
+          provenance: false
+          build-args: ${{ inputs.build-args }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.title=${{ inputs.title-prefix }}/${{ inputs.service }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=${{ inputs.licenses }}
+          cache-from: |
+            type=registry,ref=${{ env.CACHE }}
+            ${{ inputs.extra-cache-from }}
+          cache-to: ${{ inputs.publish && format('type=registry,ref={0},mode=max,image-manifest=true,oci-mediatypes=true', env.CACHE) || '' }}
+          no-cache-filters: ${{ inputs.rebuild-runtime && (inputs.target || inputs.runtime-stage) || '' }}
+
+      # SLSA build provenance for the pushed digest, signed keylessly and
+      # stored in GitHub's attestation API and, as an OCI referrer, next to
+      # the image; neither changes the image's own digest. No storage
+      # record.
+      - name: Attest build provenance
+        if: inputs.publish
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Install cosign
+        if: inputs.publish
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # The cosign-sign action from this workflow's own commit, fetched
+      # into the workspace after the build (so the build context never sees
+      # it): a reusable workflow can't `uses:` its own repository at its own
+      # SHA any other way.
+      - name: Fetch Distant-Signal/ci's actions (this workflow's commit)
+        if: inputs.publish
+        env:
+          CI_REPOSITORY: ${{ job.workflow_repository }}
+          CI_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          dir=.ds-ci
+          git init -q "${dir}"
+          git -C "${dir}" fetch -q --depth=1 "${GITHUB_SERVER_URL}/${CI_REPOSITORY}.git" "${CI_SHA}"
+          git -C "${dir}" checkout -q FETCH_HEAD
+
+      # Signed once, by digest: a signature attaches to the digest, not a
+      # tag.
+      - name: Sign the published image
+        if: inputs.publish
+        uses: ./.ds-ci/actions/cosign-sign
+        with:
+          ref: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+
+      # Matrix legs' outputs don't aggregate for a later job, so each leg
+      # uploads its digest as its own artifact; the file name is unique per
+      # image too, so a `merge-multiple: true` download can't collide.
+      - name: Record image digest
+        if: inputs.publish && inputs.record-digest
+        env:
+          SERVICE: ${{ inputs.service }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: echo "${SERVICE}=${DIGEST}" > "${RUNNER_TEMP}/digest-${SERVICE}.txt"
+
+      - name: Upload image digest artifact
+        if: inputs.publish && inputs.record-digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-digest-${{ inputs.service }}
+          path: ${{ runner.temp }}/digest-${{ inputs.service }}.txt
+          retention-days: 1

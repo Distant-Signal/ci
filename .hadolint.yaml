@@ -1,0 +1,8 @@
+# hadolint config for every tracked Dockerfile (the self-test fixture), via
+# scripts/lint-scripts.py. Strict: every rule, failing down to style level.
+# Opt out per instruction (`# hadolint ignore=DLxxxx # reason`), never here.
+failure-threshold: style
+
+# Docker Hub official images only, pinned by tag and digest.
+trustedRegistries:
+  - docker.io

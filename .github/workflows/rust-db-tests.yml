@@ -1,0 +1,313 @@
+name: Rust DB tests
+
+# Reusable: the DATABASE_URL/REDIS_URL-gated `#[ignore]`d tests. Build
+# once, run many: one job builds every test binary into an archive (the
+# repository's own command, e.g. a cargo-nextest archive), and one job per
+# pass runs from it in parallel, each against its own fresh Postgres and
+# Redis. The passes (and the archive command) come from the repository's
+# passes file (default .github/db-tests.toml; scripts/db-tests-passes.py
+# documents the format). The pass jobs need no Rust toolchain, cargo cache
+# or build packages.
+#
+#   jobs:
+#     rust-db-tests:
+#       uses: Distant-Signal/ci/.github/workflows/rust-db-tests.yml@<sha> # main
+#       with:
+#         toolchain: 1.88.0
+#         # renovate: datasource=docker depName=postgres
+#         postgres-image: postgres:18@sha256:...
+#         # renovate: datasource=docker depName=valkey/valkey
+#         redis-image: valkey/valkey:8.1.10-trixie@sha256:...
+#
+# The images are inputs, so the calling repository pins them next to its
+# own deployment's versions; the `# renovate:` annotations are what the
+# Distant-Signal/ci Renovate preset bumps them by.
+#
+# What every pass script can use: DATABASE_URL (the superuser, on the
+# `postgres` database), REDIS_URL, DB_TESTS_ARCHIVE (the archive file),
+# cargo-nextest and sqlx-cli on PATH, uv with the `uv-sync` environment,
+# and Postgres tuned for tests (fsync, full_page_writes and
+# synchronous_commit off: a throwaway server needs no durability).
+
+on:
+  workflow_call:
+    inputs:
+      toolchain:
+        description: The Rust toolchain the archive is built with.
+        type: string
+        required: true
+      postgres-image:
+        description: The Postgres service image, pinned by digest. Its health check runs `pg_isready`.
+        type: string
+        required: true
+      redis-image:
+        description: The Redis service image, pinned by digest. Its health check runs `redis-cli ping`.
+        type: string
+        required: true
+      passes-file:
+        description: The passes file (scripts/db-tests-passes.py), relative to the repository root.
+        type: string
+        required: false
+        default: .github/db-tests.toml
+      apt-packages:
+        description: >-
+          Build packages for the archive job, space-separated. Skipped when
+          the runner image already has them all; otherwise apt retries a
+          stalled mirror instead of hanging.
+        type: string
+        required: false
+        default: libssl-dev pkg-config
+      cache-key:
+        description: Swatinem/rust-cache's shared-key for the archive build.
+        type: string
+        required: false
+        default: rust-db-tests
+      sqlx-cli-version:
+        description: sqlx-cli (postgres, rustls), built in the archive job and shared with the pass jobs.
+        type: string
+        required: false
+        default: 0.8.6
+      nextest-version:
+        description: cargo-nextest, installed by taiki-e/install-action.
+        type: string
+        required: false
+        default: 0.9.148
+      uv-version:
+        description: uv, for the repository's own scripts.
+        type: string
+        required: false
+        # renovate: datasource=pypi depName=uv
+        default: "0.13.6"
+      uv-sync:
+        description: >-
+          `uv sync` arguments for the pass jobs (e.g. the group a pass's
+          Python scripts need). Empty: no sync.
+        type: string
+        required: false
+        default: --locked --group lint
+      runs-on:
+        description: The runner label for every job.
+        type: string
+        required: false
+        default: ubuntu-26.04
+
+permissions:
+  contents: read
+
+jobs:
+  rust-db-build:
+    name: DB tests (build the test archive)
+    runs-on: ${{ inputs.runs-on }}
+    outputs:
+      passes: ${{ steps.passes.outputs.passes }}
+    env:
+      # No debuginfo: a failing test's panic message still names its
+      # file:line (the panic location is compiled in); only a backtrace
+      # loses them. Full debuginfo made the cargo cache 4.7 GB (1-4 minutes
+      # to restore), and half of each test binary is line tables alone, so
+      # the archive the pass jobs download halves too.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Fetch Distant-Signal/ci's scripts (this workflow's commit)
+        env:
+          CI_REPOSITORY: ${{ job.workflow_repository }}
+          CI_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/ds-ci"
+          git init -q "${dir}"
+          git -C "${dir}" fetch -q --depth=1 "${GITHUB_SERVER_URL}/${CI_REPOSITORY}.git" "${CI_SHA}"
+          git -C "${dir}" checkout -q FETCH_HEAD
+          echo "DS_CI=${dir}" >> "${GITHUB_ENV}"
+
+      # Fails fast on a malformed passes file, before any build.
+      - name: Read the passes (${{ inputs.passes-file }})
+        id: passes
+        env:
+          PASSES_FILE: ${{ inputs.passes-file }}
+        run: python3 "${DS_CI}/scripts/db-tests-passes.py" matrix --file "${PASSES_FILE}"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ inputs.toolchain }}
+
+      # The runner image usually has the packages, so apt is skipped then;
+      # when it is needed, a stalled mirror times out and retries instead of
+      # hanging (it stalled 4-9 minutes on ~5% of runs).
+      - name: Install build dependencies
+        if: inputs.apt-packages != ''
+        env:
+          PACKAGES: ${{ inputs.apt-packages }}
+        run: |
+          read -r -a packages <<< "${PACKAGES}"
+          installed="$(dpkg-query -W -f='${db:Status-Status}\n' "${packages[@]}" 2>/dev/null | grep -cx installed || true)"
+          if [[ "${installed}" == "${#packages[@]}" ]]; then
+            echo "${PACKAGES}: already installed"
+            exit 0
+          fi
+          apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+          sudo apt-get "${apt_opts[@]}" update
+          sudo apt-get "${apt_opts[@]}" install -y --no-install-recommends "${packages[@]}"
+
+      # Only the default branch saves (see rust-ci.yml). Only third-party
+      # crates are cached (the default; spelled out).
+      - name: Cache cargo registry/target
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: ${{ inputs.cache-key }}
+          cache-all-crates: false
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+
+      # rust-cache keeps ~/.cargo/bin, so on a warm cache this is a no-op.
+      - name: Install sqlx-cli
+        env:
+          SQLX_CLI_VERSION: ${{ inputs.sqlx-cli-version }}
+        run: cargo install sqlx-cli --version "${SQLX_CLI_VERSION}" --no-default-features --features postgres,rustls --locked
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-nextest@${{ inputs.nextest-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ inputs.uv-version }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Build the DB test archive ([archive] in ${{ inputs.passes-file }})
+        env:
+          PASSES_FILE: ${{ inputs.passes-file }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/db-tests"
+          export DB_TESTS_ARCHIVE="${RUNNER_TEMP}/db-tests/db-tests.tar.zst"
+          python3 "${DS_CI}/scripts/db-tests-passes.py" script --file "${PASSES_FILE}" archive > "${RUNNER_TEMP}/db-tests-archive.sh"
+          bash -euo pipefail "${RUNNER_TEMP}/db-tests-archive.sh"
+          if [[ ! -s "${DB_TESTS_ARCHIVE}" ]]; then
+            echo "::error::the archive command wrote nothing to \$DB_TESTS_ARCHIVE" >&2
+            exit 1
+          fi
+          sqlx_bin="$(command -v sqlx)"
+          cp "${sqlx_bin}" "${RUNNER_TEMP}/db-tests/sqlx"
+          ls -l "${RUNNER_TEMP}/db-tests"
+          du -sh target
+
+      - name: Upload the DB test archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: db-tests
+          path: ${{ runner.temp }}/db-tests/
+          # Already zstd-compressed.
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  rust-db-pass:
+    name: ${{ matrix.pass.name }}
+    needs: rust-db-build
+    runs-on: ${{ inputs.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        pass: ${{ fromJSON(needs.rust-db-build.outputs.passes) }}
+    services:
+      postgres:
+        image: ${{ inputs.postgres-image }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: ${{ inputs.redis-image }}
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Fetch Distant-Signal/ci's scripts (this workflow's commit)
+        env:
+          CI_REPOSITORY: ${{ job.workflow_repository }}
+          CI_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/ds-ci"
+          git init -q "${dir}"
+          git -C "${dir}" fetch -q --depth=1 "${GITHUB_SERVER_URL}/${CI_REPOSITORY}.git" "${CI_SHA}"
+          git -C "${dir}" checkout -q FETCH_HEAD
+          echo "DS_CI=${dir}" >> "${GITHUB_ENV}"
+
+      - name: Download the DB test archive
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: db-tests
+          path: ${{ runner.temp }}/db-tests
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-nextest@${{ inputs.nextest-version }}
+
+      # sqlx-cli, built (and cached) by the archive job.
+      - name: Put sqlx-cli on PATH
+        run: |
+          chmod +x "${RUNNER_TEMP}/db-tests/sqlx"
+          echo "${RUNNER_TEMP}/db-tests" >> "${GITHUB_PATH}"
+          echo "DB_TESTS_ARCHIVE=${RUNNER_TEMP}/db-tests/db-tests.tar.zst" >> "${GITHUB_ENV}"
+
+      # A service container takes no command line, so the settings go in
+      # with ALTER SYSTEM (all three take effect on reload).
+      - name: Tune Postgres for tests (fsync, full_page_writes, synchronous_commit off)
+        run: >-
+          psql "${DATABASE_URL}" -X -q -v ON_ERROR_STOP=1
+          -c "ALTER SYSTEM SET fsync = off"
+          -c "ALTER SYSTEM SET full_page_writes = off"
+          -c "ALTER SYSTEM SET synchronous_commit = off"
+          -c "SELECT pg_reload_conf()"
+          -c "SHOW fsync"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ inputs.uv-version }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: uv sync ${{ inputs.uv-sync }}
+        if: inputs.uv-sync != ''
+        env:
+          UV_SYNC: ${{ inputs.uv-sync }}
+        run: |
+          read -r -a args <<< "${UV_SYNC}"
+          uv sync "${args[@]}"
+
+      - name: ${{ matrix.pass.name }} (pass ${{ matrix.pass.id }} in ${{ inputs.passes-file }})
+        env:
+          PASSES_FILE: ${{ inputs.passes-file }}
+          PASS_ID: ${{ matrix.pass.id }}
+        run: |
+          set -euo pipefail
+          python3 "${DS_CI}/scripts/db-tests-passes.py" script --file "${PASSES_FILE}" pass "${PASS_ID}" > "${RUNNER_TEMP}/db-tests-pass.sh"
+          cat "${RUNNER_TEMP}/db-tests-pass.sh"
+          bash -euo pipefail "${RUNNER_TEMP}/db-tests-pass.sh"

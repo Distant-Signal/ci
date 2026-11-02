@@ -1,0 +1,245 @@
+name: Rust CI
+
+# Reusable: lint, check and test a Rust workspace. Jobs: clippy (both
+# feature sets, -D warnings), the MSRV check, cargo-deny, rustfmt, and
+# build + test (the tests that need no database; see rust-db-tests.yml for
+# the rest).
+#
+#   jobs:
+#     rust:
+#       uses: Distant-Signal/ci/.github/workflows/rust-ci.yml@<sha> # main
+#       with:
+#         toolchain: 1.88.0
+#         msrv: 1.88.0
+#
+# Clippy: plain cargo, per the "Strict Config Starting Points" guide: cargo
+# flags before `--`, clippy-driver flags after it. `-D warnings` makes the
+# workspace's [workspace.lints] (kept at "warn" there, so a newer local
+# toolchain doesn't break builds) a hard gate. `--all-targets` lints tests,
+# benches and examples too. Both feature sets run, so code behind a feature
+# flag and code compiled only without one are linted. (Not
+# FasterSpeeding/Piped's clippy.yml: it passes `--all-features` after
+# cargo's `--`, where clippy-driver rejects it.)
+#
+# Caches: only the default branch writes them (`save-if`). A pull request's
+# save could only ever be restored by later runs of that same pull request,
+# and the 10 GB Actions cache was over its cap evicting main's entries for
+# them. Pull requests still restore main's. clippy and msrv share one entry
+# (same toolchain and dependency builds: clippy-driver only wraps the
+# workspace crates).
+
+on:
+  workflow_call:
+    inputs:
+      toolchain:
+        description: The Rust toolchain every job but msrv uses (dtolnay/rust-toolchain).
+        type: string
+        required: true
+      msrv:
+        description: >-
+          The workspace's rust-version, checked with exactly that toolchain
+          (`cargo +<msrv> check --all-features --all-targets`), so the
+          promise holds when the other jobs' toolchain moves forward.
+        type: string
+        required: true
+      apt-packages:
+        description: >-
+          System packages to apt-get install before building (clippy, msrv,
+          build and test), space-separated. E.g. rdkafka's vendored
+          librdkafka: `cmake libssl-dev pkg-config libsasl2-dev
+          libcurl4-openssl-dev`.
+        type: string
+        required: false
+        default: ""
+      cargo-deny-version:
+        description: cargo-deny, installed by taiki-e/install-action (checksum-verified).
+        type: string
+        required: false
+        default: 0.20.2
+      extra-test-command:
+        description: >-
+          Run after `cargo test --workspace` in the build-and-test job, from
+          the repository root (e.g. a fast data validator built by the same
+          `cargo build`). Empty: nothing.
+        type: string
+        required: false
+        default: ""
+      extra-test-name:
+        description: The step name shown for extra-test-command.
+        type: string
+        required: false
+        default: Extra test command
+      runs-on:
+        description: The runner label for every job.
+        type: string
+        required: false
+        default: ubuntu-26.04
+
+permissions:
+  contents: read
+
+jobs:
+  clippy:
+    name: cargo clippy -D warnings
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ inputs.toolchain }}
+          components: clippy
+
+      - name: Install build dependencies
+        if: inputs.apt-packages != ''
+        env:
+          PACKAGES: ${{ inputs.apt-packages }}
+        run: |
+          read -r -a packages <<< "${PACKAGES}"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "${packages[@]}"
+
+      - name: Cache cargo registry/target
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: check-all-features
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+
+      - name: cargo clippy (all features)
+        run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+
+      - name: cargo clippy (no default features)
+        run: cargo clippy --workspace --locked --all-targets --no-default-features -- -D warnings
+
+  msrv:
+    name: cargo +${{ inputs.msrv }} check (MSRV)
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust ${{ inputs.msrv }}
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ inputs.msrv }}
+
+      - name: Install build dependencies
+        if: inputs.apt-packages != ''
+        env:
+          PACKAGES: ${{ inputs.apt-packages }}
+        run: |
+          read -r -a packages <<< "${PACKAGES}"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "${packages[@]}"
+
+      # Shared with the clippy job; see the top of this file.
+      - name: Cache cargo registry/target
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: check-all-features
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+
+      - name: cargo +${{ inputs.msrv }} check
+        env:
+          MSRV: ${{ inputs.msrv }}
+        run: cargo "+${MSRV}" check --workspace --locked --all-features --all-targets
+
+  # cargo-deny with the repository's deny.toml: bans, licenses and sources
+  # block, as does fetching the advisory DB; the advisories check itself
+  # only warns. A crate advisory is a security finding, not a build break,
+  # and dependency-scan.yml's OSV scan already blocks on critical + fixable
+  # RustSec advisories (cargo-deny 0.20, advisories v2, has no severity
+  # threshold to block on). On GitHub a continue-on-error step that fails
+  # still looks green, so the ::warning:: annotation (shown on the run
+  # summary) is the visible signal.
+  cargo-deny:
+    name: cargo deny check
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ inputs.toolchain }}
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-deny@${{ inputs.cargo-deny-version }}
+
+      - name: cargo deny check (bans, licenses, sources)
+        run: cargo deny --locked check bans licenses sources
+
+      - name: Fetch the RustSec advisory DB
+        run: cargo deny --locked fetch
+
+      - name: cargo deny check advisories (non-blocking)
+        id: advisories
+        continue-on-error: true
+        run: cargo deny --frozen check advisories
+
+      - name: Report advisory findings
+        if: steps.advisories.outcome == 'failure'
+        run: echo "::warning title=cargo deny advisories (non-blocking)::cargo deny found advisories or yanked crates; see the 'cargo deny check advisories' step."
+
+  # Plain `cargo fmt --check`, not Piped's rustfmt.yml, which needs the
+  # Piped submodule's justfile.
+  rustfmt:
+    name: cargo fmt --check
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ inputs.toolchain }}
+          components: rustfmt
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+  # The tests that need no database. The DATABASE_URL/REDIS_URL-gated
+  # `#[ignore]`d ones run in rust-db-tests.yml, in parallel.
+  rust-test:
+    name: cargo build & test
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ inputs.toolchain }}
+
+      - name: Install build dependencies
+        if: inputs.apt-packages != ''
+        env:
+          PACKAGES: ${{ inputs.apt-packages }}
+        run: |
+          read -r -a packages <<< "${PACKAGES}"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "${packages[@]}"
+
+      - name: Cache cargo registry/target
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+
+      - name: cargo build --workspace
+        run: cargo build --workspace
+
+      - name: cargo test --workspace (ignored tests skipped)
+        run: cargo test --workspace
+
+      - name: ${{ inputs.extra-test-name }}
+        if: inputs.extra-test-command != ''
+        env:
+          COMMAND: ${{ inputs.extra-test-command }}
+        run: bash -euo pipefail -c "${COMMAND}"

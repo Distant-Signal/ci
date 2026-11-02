@@ -1,0 +1,7 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+
+  // This repository follows its own preset (renovate/default.json5), like
+  // every Distant-Signal repository. It has no local rules.
+  "extends": ["github>Distant-Signal/ci//renovate/default.json5"],
+}

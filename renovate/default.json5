@@ -1,0 +1,212 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+
+  // The Distant Signal Renovate preset. Every Distant-Signal repository
+  // extends it from its own renovate.json5:
+  //
+  //   "extends": ["github>Distant-Signal/ci//renovate/default.json5"],
+  //
+  // and keeps only its local rules there. Renovate runs as the hosted
+  // Renovate GitHub App, so this preset and the public Piped one it extends
+  // are the whole config: there is no admin config, host rule, registry
+  // credential or package cache behind them. Keep it that way: no presets
+  // or registries on private hosts, no postUpgradeTasks (the hosted app
+  // doesn't run them).
+  //
+  // FasterSpeeding/Piped's base preset turns on, repo-agnostically:
+  // config:best-practices + weekly lock file maintenance; github-actions
+  // updates (SHA pins and reusable-workflow `uses:` alike, including
+  // Distant-Signal/ci's own); pinDigests; osvVulnerabilityAlerts +
+  // vulnerabilityAlerts; git-submodules updates.
+  "extends": ["github>FasterSpeeding/Piped//config/renovate.json5"],
+
+  "customManagers": [
+    {
+      // A `# renovate: datasource=... depName=...` annotation on the line
+      // above a workflow's `<key>: <version>` line: uv itself
+      // (astral-sh/setup-uv's `version:` input, or a reusable workflow's
+      // `uv-version` default), which the github-actions manager does not
+      // extract (checked with `renovate --platform=local
+      // --dry-run=extract`, 44.126.1). A digest-pinned image is the next
+      // manager's.
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s*[A-Za-z0-9_-]+: \"?(?<currentValue>[^\"\\s@]+)\"?\\n",
+      ],
+    },
+    {
+      // The same annotation above a digest-pinned image passed as a
+      // reusable workflow input (e.g. rust-db-tests.yml's postgres-image):
+      // the github-actions manager reads `services:` and `container:`
+      // images, not `with:` inputs.
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>docker) depName=(?<depName>\\S+)\\n\\s*[A-Za-z0-9_-]+: \"?[^\"\\s:@]+:(?<currentValue>[^\"\\s@]+)@(?<currentDigest>sha256:[0-9a-f]{64})\"?\\n",
+      ],
+    },
+  ],
+
+  // uv.lock: the pep621 manager updates it together with a pyproject.toml
+  // pin, and lock-file maintenance re-locks the whole tree weekly. The
+  // Piped preset turns that on already (:maintainLockFilesWeekly); set
+  // here as well so it stays on if that preset ever drops it, as with
+  // pinDigests below.
+  "lockFileMaintenance": {
+    "enabled": true,
+  },
+
+  // INF-11: every third-party image is pinned by digest (Dockerfile FROMs,
+  // chart values, compose files, CI service images). Renovate updates tag
+  // and digest together.
+  "pinDigests": true,
+
+  // --- PR volume (2026-10-09) ------------------------------------------
+  // Non-major updates arrive as one grouped PR per ecosystem, in the
+  // weekly window (schedule:weekly). That includes github-actions, which
+  // the Piped preset otherwise updates "at any time". Majors stay as their
+  // own PRs in the same window. Security and vulnerability PRs are never
+  // scheduled or grouped. Branches are rebased only on conflict, so a busy
+  // main doesn't re-run CI on every open Renovate PR.
+  "rebaseWhen": "conflicted",
+  "github-actions": {
+    "schedule": ["before 4am on monday"],
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "schedule": ["at any time"],
+    "groupName": null,
+  },
+
+  "packageRules": [
+    // One non-major group per ecosystem. These come before the rules that
+    // disable updates below, so those still win.
+    {
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "cargo non-major",
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "npm non-major",
+    },
+    {
+      "matchManagers": ["pep621", "pyenv"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "python non-major",
+    },
+    {
+      "matchDatasources": ["docker"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "container images non-major",
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "github-actions non-major",
+    },
+    {
+      // The organisation's own images and charts: CI publishes them and the
+      // deployer picks the tag, so a lookup can only propose wrong tags.
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/distant-signal/**"],
+      "enabled": false,
+    },
+    {
+      // Valkey (the chart's `redis.image`, CI's redis services and the
+      // compose files) stays on major 8. Valkey 9 writes RDB 80, which
+      // redis:7.4.11 cannot load, so a major bump would remove the rollback
+      // in distant-signal's docs/valkey-migration.md. Move to 9
+      // deliberately, once that rollback is retired.
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["valkey/valkey"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false,
+    },
+    {
+      // The Rust toolchain is the MSRV (rust-version = "1.88"): every
+      // Dockerfile builds on rust:1.88-bookworm and every CI job passes
+      // `toolchain: 1.88.0`. A version bump would quietly move them off the
+      // MSRV, so only digest bumps are allowed. Move all of them, and
+      // rust-version, together and on purpose.
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["rust"],
+      "matchUpdateTypes": ["major", "minor", "patch"],
+      "enabled": false,
+    },
+    {
+      // The workflows pin dtolnay/rust-toolchain@<sha> # v1 and pass the
+      // toolchain as an input. Upstream's 1.88.0 ref is a branch, not a
+      // tag, so a `# 1.88.0` comment broke Renovate's digest lookup; the v1
+      // tag resolves. Only digest bumps of v1 go through; a v2 move is a
+      // deliberate change.
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["dtolnay/rust-toolchain"],
+      "matchUpdateTypes": ["major", "minor", "patch"],
+      "enabled": false,
+    },
+    {
+      // The github-actions manager also reads a `toolchain: 1.88.0` input
+      // itself (depName "rust", depType "uses-with"), which the docker rule
+      // above does not match: it proposed 1.88.0 -> 1.99.1 in every job,
+      // the msrv job included. Same reason: move the toolchain on purpose.
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["rust"],
+      "matchDepTypes": ["uses-with"],
+      "matchUpdateTypes": ["major", "minor", "patch"],
+      "enabled": false,
+    },
+    {
+      // A Postgres major changes the on-disk format: an 18 server can't
+      // open a 16 data directory, so a major needs pg_upgrade on production
+      // (distant-signal's docs/postgres-18-upgrade.md), the
+      // postgres-pgbackrest image on the same base, and a recreated compose
+      // volume. The bot can't do that (distant-signal PR #29); majors are
+      // moved by hand.
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["postgres"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false,
+    },
+    // --- Cargo (2026-11-01) -----------------------------------------------
+    {
+      // config:best-practices' :pinDevDependencies pins dev-dependencies
+      // with `=x.y.z`. Cargo.lock already pins every crate exactly, and an
+      // `=` requirement blocks lock-file maintenance and the resolver's
+      // MSRV-aware choice, and splits a crate a normal dependency also
+      // uses. Keep cargo dev-deps on the same strategy as normal deps; npm
+      // keeps its pins.
+      "matchManagers": ["cargo"],
+      "matchDepTypes": ["dev-dependencies"],
+      "rangeStrategy": "auto",
+    },
+    {
+      // A 0.x "minor" (base64 0.22 -> 0.23, rand 0.8 -> 0.10, ...) is a
+      // semver-breaking release in Cargo, so it doesn't belong in the
+      // non-major group: one breaking crate failed a whole group PR. Each
+      // gets its own PR instead. Comes after the group rule, so it wins.
+      "matchManagers": ["cargo"],
+      "matchCurrentVersion": "/^[=^~]?0\\./",
+      "matchUpdateTypes": ["minor"],
+      "groupName": null,
+    },
+    {
+      // sqlx 0.9 requires rustc 1.94; the MSRV is 1.88 (see the rust rules
+      // above). Move sqlx together with the MSRV, on purpose.
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["sqlx"],
+      "allowedVersions": "<0.9",
+    },
+    // --- npm (2026-11-01) -------------------------------------------------
+    {
+      // TypeScript 7 is the native (Go) compiler. Its package exports no
+      // JS compiler API, which typescript-eslint and next build's type
+      // check both load. Stay on 6.x until both support 7.
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["typescript"],
+      "allowedVersions": "<7",
+    },
+  ],
+}

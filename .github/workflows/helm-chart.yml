@@ -1,0 +1,186 @@
+name: Helm chart
+
+# Reusable: lint a Helm chart and, when `publish` is true, package it with a
+# per-build version and push it to GHCR as an OCI artifact. It does NOT sign
+# the chart: sign the pushed digest in the calling workflow's own job, with
+# this repository's actions/cosign-sign, so the signature's certificate
+# identity is the calling workflow (what Flux's `matchOIDCIdentity` pins,
+# repo split spec §5.9). A reusable workflow's job would sign as
+# Distant-Signal/ci's helm-chart.yml instead, an identity every caller
+# shares.
+#
+#   jobs:
+#     chart:
+#       uses: Distant-Signal/ci/.github/workflows/helm-chart.yml@<sha> # main
+#       permissions:
+#         contents: read
+#         packages: write
+#       with:
+#         chart: charts/distant-signal
+#         publish: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+#     sign-chart:
+#       needs: chart
+#       if: needs.chart.outputs.digest != ''
+#       runs-on: ubuntu-26.04
+#       permissions:
+#         contents: read
+#         packages: write
+#         id-token: write
+#       steps:
+#         - uses: sigstore/cosign-installer@<sha> # v4.1.2
+#         - uses: docker/login-action@<sha> # v4.7.0
+#           with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+#         - uses: Distant-Signal/ci/actions/cosign-sign@<sha> # main
+#           with:
+#             ref: ${{ needs.chart.outputs.ref }}@${{ needs.chart.outputs.digest }}
+#             verify-identity: ${{ github.server_url }}/${{ github.workflow_ref }}
+#
+# Versioning: Chart.yaml's `version:` keeps its meaning (bumped by hand, for
+# chart changes only) and is the base; each publish appends build metadata,
+# `<base>+build.<run_number>.sha.<short_sha>`, so every push is a new,
+# immutable, orderable OCI tag (run_number only increases), still valid
+# SemVer 2 and tied to its commit. `app-version`, when set, replaces
+# appVersion (e.g. `sha-<short_sha>`, the images' `type=sha` tag).
+#
+# Path: ghcr.io/<owner>/<registry-path>/<chart name>, <owner> being the
+# calling repository's owner, lowercased.
+
+on:
+  workflow_call:
+    inputs:
+      chart:
+        description: The chart's directory, relative to the repository root.
+        type: string
+        required: true
+      lint-values:
+        description: >-
+          Values files to lint the chart with as well as its defaults, one
+          per line (each a separate `helm lint --strict -f <file>`).
+        type: string
+        required: false
+        default: ""
+      publish:
+        description: Package and push the chart. Never on a pull request.
+        type: boolean
+        required: false
+        default: false
+      app-version:
+        description: The packaged chart's appVersion. Empty keeps Chart.yaml's.
+        type: string
+        required: false
+        default: ""
+      registry-path:
+        description: The path under ghcr.io/<owner>/.
+        type: string
+        required: false
+        default: charts
+      helm-version:
+        description: Helm, installed by azure/setup-helm.
+        type: string
+        required: false
+        default: v4.3.1
+      runs-on:
+        description: The runner label.
+        type: string
+        required: false
+        default: ubuntu-26.04
+    outputs:
+      ref:
+        description: The pushed chart's repository (ghcr.io/<owner>/<registry-path>/<name>); empty unless published.
+        value: ${{ jobs.chart.outputs.ref }}
+      digest:
+        description: The pushed chart's digest (sign this, never a tag); empty unless published.
+        value: ${{ jobs.chart.outputs.digest }}
+      version:
+        description: The packaged chart version; empty unless published.
+        value: ${{ jobs.chart.outputs.version }}
+
+permissions:
+  contents: read
+
+jobs:
+  chart:
+    name: helm lint${{ inputs.publish && ', package and push' || '' }} (${{ inputs.chart }})
+    runs-on: ${{ inputs.runs-on }}
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      ref: ${{ steps.push.outputs.ref }}
+      digest: ${{ steps.push.outputs.digest }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ inputs.helm-version }}
+
+      - name: helm lint --strict
+        env:
+          CHART: ${{ inputs.chart }}
+          LINT_VALUES: ${{ inputs.lint-values }}
+        run: |
+          set -euo pipefail
+          helm lint --strict "${CHART}"
+          while IFS= read -r values; do
+            [[ -n "${values}" ]] || continue
+            echo "== helm lint --strict -f ${values}"
+            helm lint --strict "${CHART}" -f "${values}"
+          done <<< "${LINT_VALUES}"
+
+      - name: Compute the chart version
+        id: version
+        if: inputs.publish
+        env:
+          CHART: ${{ inputs.chart }}
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA:0:7}"
+          base_version="$(sed -n 's/^version: *"\?\([^"[:space:]]*\)"\?.*/\1/p' "${CHART}/Chart.yaml")"
+          if [[ -z "${base_version}" ]]; then
+            echo "::error::could not parse version: from ${CHART}/Chart.yaml" >&2
+            exit 1
+          fi
+          echo "version=${base_version}+build.${GITHUB_RUN_NUMBER}.sha.${short_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Log into ghcr.io (Helm OCI)
+        if: inputs.publish
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo "${TOKEN}" | helm registry login ghcr.io --username "${ACTOR}" --password-stdin
+
+      - name: helm package and push
+        id: push
+        if: inputs.publish
+        env:
+          CHART: ${{ inputs.chart }}
+          VERSION: ${{ steps.version.outputs.version }}
+          APP_VERSION: ${{ inputs.app-version }}
+          REGISTRY_PATH: ${{ inputs.registry-path }}
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          dest="ghcr.io/${owner}/${REGISTRY_PATH}"
+          out="${RUNNER_TEMP}/helm-package"
+          args=(--version "${VERSION}" --destination "${out}")
+          if [[ -n "${APP_VERSION}" ]]; then
+            args+=(--app-version "${APP_VERSION}")
+          fi
+          helm package "${CHART}" "${args[@]}"
+          name="$(sed -n 's/^name: *"\?\([^"[:space:]]*\)"\?.*/\1/p' "${CHART}/Chart.yaml")"
+          chart_tgz="$(find "${out}" -maxdepth 1 -name "${name}-*.tgz" -print -quit)"
+          helm push "${chart_tgz}" "oci://${dest}" 2>&1 | tee "${RUNNER_TEMP}/helm-push.log"
+          # `helm push` reports "Digest: sha256:..."; sign that, never a tag.
+          digest="$(sed -n 's/^Digest: *\(sha256:[0-9a-f]\{64\}\).*/\1/p' "${RUNNER_TEMP}/helm-push.log" | head -n 1)"
+          if [[ -z "${digest}" ]]; then
+            echo "::error::could not read the pushed chart's digest from helm push's output" >&2
+            exit 1
+          fi
+          {
+            echo "ref=${dest}/${name}"
+            echo "digest=${digest}"
+          } >> "${GITHUB_OUTPUT}"

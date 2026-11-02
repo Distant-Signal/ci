@@ -1,0 +1,38 @@
+name: paths changed
+description: >-
+  Say whether a push or pull request changed anything under the given paths
+  (scripts/paths-changed.py). Answers true whenever it can't tell, so a
+  check is never skipped by mistake.
+
+inputs:
+  base:
+    description: >-
+      The commit to compare HEAD with: the pull request's base SHA, or the
+      push's `before` SHA. Empty or all zeros counts as changed.
+    required: true
+  paths:
+    description: Git pathspecs on one line, separated by spaces (e.g. `frontend/ docs/`).
+    required: true
+
+outputs:
+  changed:
+    description: "`true` or `false`."
+    value: ${{ steps.changed.outputs.changed }}
+
+runs:
+  using: composite
+  steps:
+    # Run from the workspace (the calling repository's checkout). The script
+    # is stdlib-only, so the runner's python3 does.
+    - name: Compare with the base
+      id: changed
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        BASE: ${{ inputs.base }}
+        PATHS: ${{ inputs.paths }}
+        SCRIPT: ${{ github.action_path }}/../../scripts/paths-changed.py
+      run: |
+        set -euo pipefail
+        read -r -a paths <<< "${PATHS}"
+        python3 "${SCRIPT}" --base "${BASE}" "${paths[@]}"

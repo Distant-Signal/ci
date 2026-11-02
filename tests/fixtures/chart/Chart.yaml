@@ -1,0 +1,8 @@
+# The self-test chart (.github/workflows/ci.yml's selftest-chart job).
+apiVersion: v2
+name: ci-selftest
+description: Distant-Signal/ci's helm-chart.yml self-test chart.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+icon: https://github.com/Distant-Signal.png

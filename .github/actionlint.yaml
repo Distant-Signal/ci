@@ -1,0 +1,17 @@
+# actionlint (scripts-lint) settings.
+#
+# actionlint validates `runs-on:` labels against a built-in list of
+# GitHub-hosted runners, and its latest release (1.7.12) predates the
+# ubuntu-26.04 image. Drop the label once the pinned actionlint knows it.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
+
+# The reusable workflows read their own repository and commit from the
+# `job` context's workflow_repository and workflow_sha (to fetch this
+# repository's scripts and actions at the same commit), which GitHub
+# provides but actionlint 1.7.12's context types don't list yet.
+paths:
+  .github/workflows/**/*.yml:
+    ignore:
+      - 'property "workflow_(repository|sha)" is not defined in object type'

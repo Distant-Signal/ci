@@ -1,0 +1,2 @@
+# A second values file, for helm-chart.yml's lint-values.
+message: another message

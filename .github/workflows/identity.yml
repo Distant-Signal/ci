@@ -1,0 +1,69 @@
+name: Commit identity
+
+# Reusable: no commit in the pull request or push may use a retired
+# author/committer address or carry AI attribution (repo split spec §5.10;
+# scripts/check-commit-identity.py). Other identities pass, outside
+# contributors included. A pull request checks its own commits (merge base
+# to the pull request's head, not the synthetic merge commit); a push
+# checks what it added; a new branch or a force push has no usable base and
+# is skipped.
+#
+#   jobs:
+#     commit-identity:
+#       uses: Distant-Signal/ci/.github/workflows/identity.yml@<sha> # main
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: The runner label.
+        type: string
+        required: false
+        default: ubuntu-26.04
+
+permissions:
+  contents: read
+
+jobs:
+  identity:
+    name: commits use the current identity, without AI attribution
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Fetch Distant-Signal/ci's scripts (this workflow's commit)
+        env:
+          CI_REPOSITORY: ${{ job.workflow_repository }}
+          CI_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/ds-ci"
+          git init -q "${dir}"
+          git -C "${dir}" fetch -q --depth=1 "${GITHUB_SERVER_URL}/${CI_REPOSITORY}.git" "${CI_SHA}"
+          git -C "${dir}" checkout -q FETCH_HEAD
+          echo "DS_CI=${dir}" >> "${GITHUB_ENV}"
+
+      # Stdlib only: the runner's python3 runs it.
+      - name: Check commit identities
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" = "pull_request" ]]; then
+            base="$(git merge-base "origin/${BASE_REF}" "${PR_HEAD}")"
+            head="${PR_HEAD}"
+          elif [[ -n "${BEFORE}" ]] && [[ "${BEFORE}" != "0000000000000000000000000000000000000000" ]] \
+              && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            base="${BEFORE}"
+            head=HEAD
+          else
+            echo "no usable base commit (new branch or force push); skipping"
+            exit 0
+          fi
+          python3 "${DS_CI}/scripts/check-commit-identity.py" "${base}" "${head}"

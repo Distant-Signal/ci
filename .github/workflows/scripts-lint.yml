@@ -1,0 +1,106 @@
+name: Scripts lint
+
+# Reusable: lint, format-check and type-check a repository's scripts,
+# strict by default (scripts/lint-scripts.py):
+#   - every tracked *.sh: shellcheck (the repository's .shellcheckrc) and
+#     shfmt (style from .editorconfig);
+#   - Python: ruff check, ruff format --check and mypy, with the
+#     repository's own pyproject.toml settings;
+#   - the workflow run: blocks: actionlint with SHELLCHECK_OPTS
+#     '--enable=all --severity=style' (FasterSpeeding/Piped's reviewdog
+#     wrapper runs shellcheck with its default checks only);
+#   - every tracked Dockerfile: hadolint (the repository's .hadolint.yaml);
+#   - scripts/lint-containers.py: shellcheck over every Dockerfile RUN body
+#     and the docker-compose*.yml inline shell, and every image a
+#     Dockerfile or compose file pulls pinned by @sha256 digest;
+# then the repository's script tests and, optionally, the ignored-benchmark
+# gate (scripts/check-bench-gates.py).
+#
+#   jobs:
+#     scripts-lint:
+#       uses: Distant-Signal/ci/.github/workflows/scripts-lint.yml@<sha> # main
+#
+# The tools come from the calling repository's uv project: its
+# pyproject.toml `lint` dependency group (actionlint-py, hadolint-py, mypy,
+# pyyaml, ruff, shellcheck-py, shfmt-py, pinned exactly) and its uv.lock
+# (`uv sync --locked` fails if that is stale). The interpreter is its
+# .python-version's. Locally, from that repository's root:
+#   uv run <ci>/scripts/lint-scripts.py
+# with <ci> a checkout of Distant-Signal/ci.
+
+on:
+  workflow_call:
+    inputs:
+      test-command:
+        description: >-
+          The repository's script tests, run from its root after the lint.
+          Empty: none.
+        type: string
+        required: false
+        default: uv run --no-sync python -m unittest discover -s scripts/tests -v
+      check-bench-gates:
+        description: >-
+          Also fail when an `#[ignore]`d Rust benchmark under crates/ would run
+          without its env gate (scripts/check-bench-gates.py): DB test jobs
+          run every ignored test.
+        type: boolean
+        required: false
+        default: false
+      uv-version:
+        description: uv.
+        type: string
+        required: false
+        # renovate: datasource=pypi depName=uv
+        default: "0.13.6"
+      runs-on:
+        description: The runner label.
+        type: string
+        required: false
+        default: ubuntu-26.04
+
+permissions:
+  contents: read
+
+jobs:
+  scripts-lint:
+    name: scripts lint (shellcheck, shfmt, ruff, mypy, actionlint, hadolint)
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Fetch Distant-Signal/ci's scripts (this workflow's commit)
+        env:
+          CI_REPOSITORY: ${{ job.workflow_repository }}
+          CI_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/ds-ci"
+          git init -q "${dir}"
+          git -C "${dir}" fetch -q --depth=1 "${GITHUB_SERVER_URL}/${CI_REPOSITORY}.git" "${CI_SHA}"
+          git -C "${dir}" checkout -q FETCH_HEAD
+          echo "DS_CI=${dir}" >> "${GITHUB_ENV}"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ inputs.uv-version }}
+          # Caches uv's download/wheel cache, keyed on uv.lock.
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install the pinned lint tools
+        run: uv sync --locked --group lint
+
+      - name: Lint scripts
+        run: uv run --no-sync "${DS_CI}/scripts/lint-scripts.py"
+
+      - name: Test scripts
+        if: inputs.test-command != ''
+        env:
+          COMMAND: ${{ inputs.test-command }}
+        run: bash -euo pipefail -c "${COMMAND}"
+
+      - name: ignored benchmarks are env-gated
+        if: inputs.check-bench-gates
+        run: uv run --no-sync "${DS_CI}/scripts/check-bench-gates.py"

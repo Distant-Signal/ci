@@ -1,0 +1,370 @@
+name: Dependency vulnerability scan
+
+# Reusable: an independent supply-chain vulnerability scan of every lockfile
+# in the repository (Cargo.lock, package-lock.json, uv.lock, ...), distinct
+# from what Renovate does (its osvVulnerabilityAlerts/vulnerabilityAlerts
+# only open a version-bump PR when Renovate itself already knows to touch a
+# dependency). Call it on pull requests, pushes to the default branch and a
+# daily schedule:
+#
+#   on:
+#     pull_request:
+#     push:
+#       branches: [main]
+#     schedule:
+#       - cron: "23 5 * * *"
+#   concurrency:
+#     group: dependency-scan-${{ github.ref }}
+#     cancel-in-progress: true
+#   jobs:
+#     dependency-scan:
+#       uses: Distant-Signal/ci/.github/workflows/dependency-scan.yml@<sha> # main
+#       permissions:
+#         contents: read
+#         checks: write # the scan job's neutral findings check run
+#         issues: write # report-findings, on the schedule only
+#
+# Each job below asks for only what it needs, so a pull request's scan job
+# never holds issues: write (INF-14).
+
+# ============================================================================
+# TOOL CHOICE: the plain OSV-Scanner CLI binary, not the osv-scanner-action
+# ============================================================================
+#
+# google/osv-scanner v2.6.0 (confirmed live: `curl -sL
+# https://api.github.com/repos/google/osv-scanner/releases/tags/v2.6.0`,
+# published 2026-09-14) directly supports both lockfile formats used in this
+# repo (Cargo.lock, package-lock.json, and uv.lock: its uv.lock extractor
+# found all 13 locked packages when checked on 2026-10-01) in one invocation:
+# `osv-scanner scan source -r .`. The binary + checksum below are pinned to
+# that exact release rather than resolved via `latest` or a floating tag.
+#
+# The GitHub-only `google/osv-scanner-action` was deliberately NOT used here
+# even though this repo is real GitHub-hosted (unlike Distant-Signal-MCP/
+# coder-templates on the self-hosted Forgejo instance) -- using the plain CLI
+# binary keeps this workflow's actual scanning mechanism identical to what
+# the same job needs to look like on Forgejo Actions elsewhere, rather than
+# maintaining two different mechanisms for the same job across repos. A SARIF
+# upload to GitHub's native Code Scanning tab remains a reasonable optional
+# follow-on (GitHub-only, no Forgejo equivalent) but is not implemented here.
+#
+# ============================================================================
+# SEVERITY THRESHOLD: no native --fail-on-severity flag exists in v2.6.0
+# ============================================================================
+#
+# Confirmed live by actually running `osv-scanner scan source --help`
+# against the pinned v2.6.0 binary: there is no severity-threshold/fail-on
+# flag of any kind. `osv-scanner scan source` exits 1 if ANY vulnerability is
+# found at ANY severity (confirmed live: a real run against this repo's own
+# Cargo.lock/frontend/package-lock.json at the time this workflow was written
+# found 42 total advisories, only 18 of them CVSS >= 7.0, and the bare exit
+# code did not distinguish between the two). So this workflow ignores the
+# binary's own exit code entirely and instead computes the HIGH/CRITICAL
+# count itself from the `--format json` output's `results[].packages[].
+# groups[].max_severity` field (a CVSS v3 base score string, using the
+# standard >= 7.0 HIGH-and-up cutoff; empty for purely informational
+# advisories with no CVSS score at all, e.g. unmaintained-crate notices like
+# RUSTSEC-2021-0141 for `dotenv`, which this repo's own Cargo.lock currently
+# carries and which should NOT fail this job on its own).
+#
+# ============================================================================
+# TRIGGERS AND BLOCK-VS-ALERT
+# ============================================================================
+#
+# - pull_request: fails the job only on a BLOCKING finding: CRITICAL
+#   (CVSS >= 9.0) with a fixed version available, or an inconclusive scan.
+#   Every other HIGH/CRITICAL finding is non-blocking: a ::warning::
+#   annotation per finding plus a neutral (grey) "security findings
+#   (non-blocking)" check run, so a red X here always means "act now" and
+#   never hides among build/test failures. (A job-level continue-on-error
+#   would not do this: GitHub still shows the failed job's red X. GitHub
+#   commit statuses have no warning state; the Checks API's `neutral`
+#   conclusion is the only non-red, non-green result a workflow can
+#   produce.)
+# - push: same scan, same blocking rule, still fails the job -- a loud
+#   alert, since nothing can un-merge what already landed: it catches a
+#   vulnerability disclosed between approval and merge, or a direct push.
+# - schedule: the identical scan against the tip of the default branch,
+#   but never fails the job on findings (only an inconclusive scan, i.e. no
+#   valid scanner JSON, fails it) -- a cron job failing has no PR to block
+#   and no obvious owner watching it, so instead the `report-findings` job
+#   (gated `if: always()`) opens or updates a single tracking issue with the
+#   `issue-label` label (one deduplicated open issue, a comment instead of a
+#   second issue while one is open, closed with a comment when clean). The
+#   repository needs issues enabled for that.
+
+on:
+  workflow_call:
+    inputs:
+      issue-label:
+        description: The label of the scheduled run's single tracking issue.
+        type: string
+        required: false
+        default: dependency-vulnerability
+      runs-on:
+        description: The runner label.
+        type: string
+        required: false
+        default: ubuntu-26.04
+
+# INF-14: read-only by default. Only the schedule-only report-findings job
+# below writes issues, so pull request and push runs never hold issues:
+# write.
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: osv-scanner (blocks on critical + fixable)
+    runs-on: ${{ inputs.runs-on }}
+    permissions:
+      contents: read
+      checks: write # the neutral "security findings (non-blocking)" check run
+    outputs:
+      high_or_critical_count: ${{ steps.scan.outputs.high_or_critical_count }}
+      total_count: ${{ steps.scan.outputs.total_count }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download and verify OSV-Scanner v2.6.0 (linux_amd64)
+        # Pinned to the exact release tag + asset name + published SHA-256
+        # checksum, all confirmed live against
+        # github.com/google/osv-scanner/releases/tag/v2.6.0 (and its
+        # published osv-scanner_SHA256SUMS file) at the time this workflow
+        # was written -- not resolved via `latest` or a floating tag.
+        run: |
+          set -euo pipefail
+          curl -sL -o osv-scanner "https://github.com/google/osv-scanner/releases/download/v2.6.0/osv-scanner_linux_amd64"
+          echo "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108  osv-scanner" | sha256sum -c -
+          chmod +x osv-scanner
+
+      - name: Scan every lockfile (OSV-Scanner)
+        id: scan
+        run: |
+          set +e
+          ./osv-scanner scan source -r . --format json --output-file osv-results.json
+          echo "osv-scanner exited $? (ignored -- see this workflow's own header comment: the binary's exit code doesn't distinguish severity, so HIGH/CRITICAL is computed below instead)"
+          set -e
+
+          # A crashed scanner is a CI error, not a clean scan and not a finding.
+          if [[ ! -s osv-results.json ]] || ! jq -e . osv-results.json > /dev/null 2>&1; then
+            echo "::error::osv-scanner produced no valid JSON -- treating this run as inconclusive, not clean."
+            exit 1
+          fi
+
+          total=$(jq '[.results[]?.packages[]? | .groups[]?] | length' osv-results.json)
+          high_or_critical=$(jq '
+            [.results[]?.packages[]?
+              | .groups[]?
+              | select(.max_severity != null and .max_severity != "" and (.max_severity | tonumber) >= 7.0)
+            ] | length
+          ' osv-results.json)
+
+          # One row per HIGH/CRITICAL group: blocking = CVSS >= 9.0 and some
+          # advisory in the group lists a fixed version for this package.
+          jq -r --arg ws "${GITHUB_WORKSPACE}/" '
+            .results[]? as $r | $r.packages[]? as $p | $p.groups[]?
+            | select(.max_severity != null and .max_severity != "" and (.max_severity | tonumber) >= 7.0)
+            | . as $g
+            | ([$p.vulnerabilities[]? | select(.id as $id | $g.ids | index($id))
+                | .affected[]? | select((.package.name | ascii_downcase) == ($p.package.name | ascii_downcase))
+                | .ranges[]?.events[]? | select(has("fixed"))] | length > 0) as $fix
+            | [(if ((.max_severity | tonumber) >= 9.0 and $fix) then "error" else "warning" end),
+               ($r.source.path | ltrimstr($ws)),
+               "\($p.package.ecosystem)/\($p.package.name)@\($p.package.version): \(.ids | join(", ")) (max CVSS \(.max_severity), \(if $fix then "fix available" else "no fix yet" end))"]
+            | @tsv' osv-results.json > findings.tsv
+          blocking=$(grep -c '^error' findings.tsv || true)
+          # GitHub shows at most 10 warning/10 error annotations per step;
+          # the full list stays in the log and the artifact.
+          while IFS=$'\t' read -r level file text; do
+            if [[ ${level} == error ]]; then
+              title='Blocking dependency vulnerability'
+            else
+              title='Dependency vulnerability (non-blocking)'
+            fi
+            echo "::${level} file=${file},title=${title}::${text}"
+          done < findings.tsv
+
+          {
+            echo "total_count=${total}"
+            echo "high_or_critical_count=${high_or_critical}"
+            echo "blocking_count=${blocking}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Found ${high_or_critical} HIGH/CRITICAL (CVSS >= 7.0) finding(s), ${blocking} blocking (CVSS >= 9.0 and fixable), out of ${total} total advisory group(s)."
+
+      - name: Upload scan results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: osv-scanner-results
+          path: osv-results.json
+          retention-days: 30
+
+      # Neutral (grey) when there are non-blocking findings, success when
+      # there are none. Never fails the run. Known quirk: a check run made
+      # with GITHUB_TOKEN joins the GitHub Actions check suite, so it may be
+      # listed under a different workflow run in the Checks tab.
+      - name: Post the non-blocking findings check run
+        if: github.event_name != 'schedule' && steps.scan.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COUNT: ${{ steps.scan.outputs.high_or_critical_count }}
+          BLOCKING: ${{ steps.scan.outputs.blocking_count }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [[ "${COUNT}" -gt 0 ]]; then conclusion=neutral; else conclusion=success; fi
+          summary="${COUNT} HIGH/CRITICAL finding(s), ${BLOCKING} blocking. Details: ${RUN_URL}"
+          gh api "repos/${GITHUB_REPOSITORY}/check-runs" \
+            -f name="security findings (non-blocking)" -f head_sha="${SHA}" \
+            -f status=completed -f conclusion="${conclusion}" -f details_url="${RUN_URL}" \
+            -f "output[title]=${COUNT} HIGH/CRITICAL dependency finding(s)" \
+            -f "output[summary]=${summary}" --silent \
+            || echo "::warning::Couldn't create the findings check run; ${summary}"
+
+      - name: Fail on blocking findings (pull_request/push only)
+        if: github.event_name != 'schedule'
+        run: |
+          count="${{ steps.scan.outputs.blocking_count }}"
+          if [[ "${count}" -gt 0 ]]; then
+            echo "::error::SECURITY (blocking): ${count} CRITICAL (CVSS >= 9.0) dependency finding(s) with a fix available -- see the annotations and the osv-scanner-results artifact."
+            exit 1
+          fi
+          echo "No blocking findings. Non-blocking HIGH/CRITICAL ones: ${{ steps.scan.outputs.high_or_critical_count }} (see the annotations and the 'security findings (non-blocking)' check)."
+
+  # Cron-only alerting path; see the top of this file.
+  report-findings:
+    needs: scan
+    if: always() && github.event_name == 'schedule'
+    runs-on: ${{ inputs.runs-on }}
+    permissions:
+      issues: write
+    steps:
+      - name: Download scan results
+        # The artifact is missing when the scan failed before writing it; the
+        # script below still has to run and record the failed scan.
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: osv-scanner-results
+
+      - name: Open, update, or close the tracking issue
+        env:
+          ISSUE_LABEL: ${{ inputs.issue-label }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const label = process.env.ISSUE_LABEL;
+            const highOrCritical = parseInt('${{ needs.scan.outputs.high_or_critical_count }}', 10) || 0;
+            const total = '${{ needs.scan.outputs.total_count }}';
+            // A failed scan job (e.g. no valid scanner JSON) leaves its
+            // outputs empty, which would parse as 0 findings: never treat
+            // that as clean.
+            const scanOk = '${{ needs.scan.result }}' === 'success';
+            const passed = scanOk && highOrCritical === 0;
+
+            const { data: openIssues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: label,
+            });
+
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            if (!scanOk) {
+              // Keep any open tracking issue open; just record the failure.
+              for (const issue of openIssues) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: `The daily dependency vulnerability scan failed (result: ${{ needs.scan.result }}), so it is inconclusive, not clean. Leaving this issue open: ${runUrl}`,
+                });
+              }
+              // No tracking issue open: open one so a failed cron scan isn't
+              // silent.
+              if (openIssues.length === 0) {
+                await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title: 'Dependency vulnerability scan failed (inconclusive)',
+                  body: `The daily dependency vulnerability scan failed (result: ${{ needs.scan.result }}), so it is inconclusive, not clean.\n\nWorkflow run: ${runUrl}`,
+                  labels: [label],
+                });
+              }
+              core.warning(`Dependency scan job result was ${{ needs.scan.result }}; not treating it as clean.`);
+              return;
+            }
+
+            if (passed) {
+              for (const issue of openIssues) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: `The daily dependency vulnerability scan is clean again (0 HIGH/CRITICAL findings): ${runUrl}`,
+                });
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  state: 'closed',
+                });
+              }
+              return;
+            }
+
+            let osvJson = '(no osv-results.json captured)';
+            try {
+              osvJson = fs.readFileSync('osv-results.json', 'utf8');
+            } catch (err) {
+              osvJson = `(failed to read osv-results.json: ${err.message})`;
+            }
+
+            // Summarize rather than dump the full JSON (it can be large):
+            // one line per affected package/group with its max CVSS score.
+            let summaryLines = [];
+            try {
+              const parsed = JSON.parse(osvJson);
+              for (const result of parsed.results ?? []) {
+                for (const pkg of result.packages ?? []) {
+                  for (const group of pkg.groups ?? []) {
+                    const sev = group.max_severity || '(no CVSS score)';
+                    summaryLines.push(`- ${pkg.package.ecosystem}/${pkg.package.name}@${pkg.package.version}: ${group.ids.join(', ')} (max CVSS ${sev})`);
+                  }
+                }
+              }
+            } catch (err) {
+              summaryLines = [`(failed to parse osv-results.json: ${err.message})`];
+            }
+            if (summaryLines.length > 200) {
+              summaryLines = summaryLines.slice(0, 200).concat(['... (truncated, see the full osv-scanner-results artifact on the workflow run below)']);
+            }
+
+            const body = [
+              `The daily dependency vulnerability scan found ${highOrCritical} HIGH/CRITICAL (CVSS >= 7.0) finding(s), out of ${total} total advisory group(s).`,
+              '',
+              `Workflow run: ${runUrl}`,
+              '',
+              ...summaryLines,
+            ].join('\n');
+
+            if (openIssues.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: openIssues[0].number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: 'Dependency vulnerability scan: HIGH/CRITICAL findings',
+                body,
+                labels: [label],
+              });
+            }
