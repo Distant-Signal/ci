@@ -1,0 +1,79 @@
+# git filter-repo --paths-from-file for Distant-Signal/ds-deploy (repo split
+# spec §3.1, §5.6, §9 phase 5). Run on a fresh mirror clone of
+# Distant-Signal/distant-signal (the rewritten history), with no identity or
+# message callbacks. Historical names were collected with
+#   git log --follow --name-only --format= -- <file>
+# for every file below, plus every path ever under the listed directories.
+# The only rename found is the chart directory, charts/nr-status, which the
+# charts/ prefix covers. Absent paths are ignored, so the list works before
+# and after phase 4.
+
+# Both charts, with their CI values, LICENSEs and vendored core files.
+# charts/nr-status/ is the umbrella chart's name before the rename.
+charts/
+
+# The alert rules' promtool unit tests and payload check, and the runbook
+# they check every alert against.
+scripts/alert-rules-tests/
+scripts/check-alert-payloads.py
+docs/alerts.md
+
+# The chart policy checks and the values reference.
+scripts/chart-values-doc.py
+scripts/check-config-defaults-chart.py
+scripts/check-cronjobs-chart.py
+scripts/check-darwin-chart.py
+scripts/check-enricher-provider-chart.py
+scripts/check-ingest-bucket-chart.py
+scripts/check-ingest-phase0-chart.py
+scripts/check-kafka-rollout-chart.py
+scripts/check-pod-labels-chart.py
+scripts/check-redis-netpol-chart.py
+scripts/check-schedulefeed-chart.py
+
+# The release ordering checks (§5.1, §5.3). COPIED, not moved: the
+# monorepo's containers.yml keeps running `release-order.py labels` for
+# its image builds until phases 6 to 9.
+scripts/release-order.py
+scripts/tests/fixtures/release-order/
+
+# The core access files' vendoring: the pre-phase-4 copy check, and
+# phase 4's sync-core.py, which pulls ds-core's six signed release assets
+# into charts/distant-signal/files/ and scripts/render-redis-acl.py (the
+# renderer check-ingest-phase0-chart.py imports) and checks that
+# core-version, migrate.image.tag and any Cargo ds-core tags agree.
+scripts/sync-chart-core-files.py
+scripts/sync-core.py
+scripts/render-redis-acl.py
+core-version
+
+# Tests of the scripts and chart files above.
+scripts/tests/test_check_config_defaults_chart.py
+scripts/tests/test_check_kafka_rollout_chart.py
+scripts/tests/test_check_redis_netpol_chart.py
+scripts/tests/test_release_order.py
+scripts/tests/test_sync_chart_core_files.py
+scripts/tests/test_sync_core.py
+scripts/tests/test_schedule_sftp_entrypoint.py
+scripts/tests/test_postgres_roles_setup.py
+
+# Deploy runbooks: operating what the chart deploys (Postgres, Valkey,
+# the roles Job and Redis ACL rollout, CronJobs, the schedule feed's SFTP
+# pod and GCS bucket).
+docs/postgres-pitr.md
+docs/postgres-18-upgrade.md
+docs/postgres-app-role.md
+docs/redis-acl.md
+docs/valkey-migration.md
+docs/scheduled-jobs.md
+docs/schedule-feed-bucket.md
+docs/schedule-feed-sftp.md
+
+# CI history. The chart and CI changed together 63% of the time (§3.1),
+# so their history comes along; the top commit trims both files to the
+# chart's jobs. containers.yml becomes chart.yml, the chart workflow whose
+# path is the chart's cosign identity. A `==>` line only renames, so the
+# old name is also listed as a path.
+.github/workflows/ci.yml
+.github/workflows/containers.yml
+.github/workflows/containers.yml==>.github/workflows/chart.yml
