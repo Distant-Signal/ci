@@ -1,0 +1,33 @@
+name: openapi breaking
+description: >-
+  Fail when an OpenAPI document changed in a breaking way since a base commit
+  (scripts/openapi-breaking.py: `oasdiff breaking --fail-on ERR`, with a
+  pinned, checksum-verified oasdiff). A document new since the base passes;
+  a deleted one fails.
+
+inputs:
+  base:
+    description: >-
+      The commit to compare with: the pull request's base SHA, or the push's
+      `before` SHA. Empty or all zeros compares nothing and passes.
+    required: true
+  specs:
+    description: The OpenAPI documents, repository-relative, on one line separated by spaces.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Run from the workspace (the calling repository's checkout). The script
+    # is stdlib-only, so the runner's python3 does.
+    - name: Compare with the base
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        BASE: ${{ inputs.base }}
+        SPECS: ${{ inputs.specs }}
+        SCRIPT: ${{ github.action_path }}/../../scripts/openapi-breaking.py
+      run: |
+        set -euo pipefail
+        read -r -a specs <<< "${SPECS}"
+        python3 "${SCRIPT}" --base "${BASE}" "${specs[@]}"

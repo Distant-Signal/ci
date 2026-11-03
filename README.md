@@ -53,12 +53,17 @@ the permissions the caller must grant.
   `helm-chart.yml` leaves chart signing to its caller.
 - `actions/paths-changed`: whether a push or pull request touched given paths,
   answering true whenever it can't tell.
+- `actions/openapi-breaking`: fails when an OpenAPI document changed in a
+  breaking way since a base commit (`oasdiff breaking --fail-on ERR`, a pinned
+  and checksum-verified oasdiff). A document new since the base passes, a
+  deleted one fails; a breaking change means publishing a new version
+  (`v2.json`) rather than editing the old one.
 
 ### Scripts (`scripts/`)
 
 `lint-scripts.py`, `lint-containers.py`, `check-npm-licences.py`,
 `check-commit-identity.py`, `check-licence.py`, `check-bench-gates.py`,
-`paths-changed.py`, `db-tests-passes.py` and `image-labels.py`. They check the repository they are run from (the
+`paths-changed.py`, `db-tests-passes.py`, `image-labels.py` and `openapi-breaking.py`. They check the repository they are run from (the
 working directory), not this one. A reusable workflow fetches them from its
 own commit (`job.workflow_sha`), so a caller's pin covers the scripts too.
 To run one locally, from the root of the repository to check:
