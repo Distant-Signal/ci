@@ -13,6 +13,8 @@ name: CI
 #   - dependency-scan.yml over uv.lock;
 #   - the Renovate preset and config, through renovate-config-validator;
 #   - actions/paths-changed against the fixtures;
+#   - actions/openapi-breaking against tests/fixtures/openapi, with the
+#     pinned oasdiff;
 #   - image.yml and helm-chart.yml on the fixtures: built and linted on
 #     every run; pushed (to ghcr.io/<owner>/ci-selftest/...), signed with
 #     actions/cosign-sign and verified only by a manual run with `publish`
@@ -103,6 +105,29 @@ jobs:
           set -euo pipefail
           echo "unknown base: ${UNKNOWN}; HEAD vs HEAD: ${SAME}"
           [[ "${UNKNOWN}" == true && "${SAME}" == false ]]
+
+  openapi-breaking:
+    name: actions/openapi-breaking
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+
+      - name: The fixture against itself has no breaking change
+        uses: ./actions/openapi-breaking
+        with:
+          base: ${{ github.sha }}
+          specs: tests/fixtures/openapi/v1.json
+
+      # The unit tests' oasdiff cases (additive passes, breaking fails), with
+      # the pinned, verified binary; scripts-lint runs them without it.
+      - name: The oasdiff cases, with the pinned oasdiff
+        run: |
+          set -euo pipefail
+          python3 scripts/openapi-breaking.py --download "${RUNNER_TEMP}"
+          OASDIFF="${RUNNER_TEMP}/oasdiff" python3 -m unittest scripts/tests/test_openapi_breaking.py -v
 
   selftest-image:
     uses: ./.github/workflows/image.yml
