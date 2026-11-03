@@ -47,7 +47,13 @@ name: Image
 # and assembled by scripts/image-labels.py from this workflow's commit.
 #
 # Tags: docker/metadata-action's branch, tag and pull request tags, plus
-# `type=sha` (an immutable `sha-<short-sha>` tag) for a chart to pin. No
+# `type=sha` (an immutable `sha-<short-sha>` tag), plus, on a default-branch
+# run, the build tag `build.<run id>-<40-hex commit>` that ds-deploy pins
+# (repo split spec §5.4). Renovate orders build tags by their number; it is
+# the workflow run's id, not its per-repository run number, because run ids
+# rise across every repository, so a service that moves to a new repository
+# (phases 6 to 9) keeps ordering above its old builds. The chart reads the
+# commit from the tag for the api's /public/version. No
 # `type=schedule`: a weekly rebuild gets the same tags as a push of the same
 # commit. Its labels are not used: `created` and `revision` would make
 # every push a new image config, so a new digest, for byte-identical layers.
@@ -267,6 +273,7 @@ jobs:
             type=ref,event=tag
             type=ref,event=pr
             type=sha
+            type=raw,value=build.${{ github.run_id }}-${{ github.sha }},enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
       - name: Build${{ inputs.publish && ' and push' || '' }} image
         id: build
