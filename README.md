@@ -90,6 +90,12 @@ in workflow inputs. Each repository keeps only its local rules. It must stay
 usable by the hosted Renovate app: no private presets, registries or
 `postUpgradeTasks`.
 
+## Extraction path lists
+
+`paths/<repo>.txt` is the `git filter-repo --paths-from-file` list each
+repository was extracted from the landing repository with (repo split spec
+§5.6): its current paths, then the historical names they had.
+
 ## Organisation settings
 
 The organisation's Actions allow-list includes `Distant-Signal/*`. Allowing a
