@@ -65,6 +65,14 @@ tag, else --app-version; anonymously, as the cluster pulls) and checks:
      checkout of the ds-core release the chart pins, which the pinned
      ds-migrate carries.
 
+It also checks each image's source: the repository the chart's
+`/public/version` names for it (its `image.source`, else `sourceCode.url`;
+ds-deploy's `distant-signal.sourceImagesJson`) must be the pinned image's
+`org.opencontainers.image.source` label, which the repository that built it
+stamps. A service that moves repository needs its `source` changed with its
+pin. (The images carry no revision label: the chart takes each one's
+commit from its build tag.)
+
 Versions order within a scheme: `vX.Y.Z` by number, and `build.<run>-<sha>`
 (§5.4's image tags) by run. Two schemes don't order, which is a finding. A
 missing label is a finding.
@@ -90,6 +98,7 @@ from typing import Any
 
 CORE = "org.distant-signal.core-version"
 API_BUILD = "org.distant-signal.api-build"
+SOURCE = "org.opencontainers.image.source"
 # The crate whose version is the core's: every core crate shares one tag
 # (§5.2), and every Rust image links ds-store or its dependencies.
 CORE_CRATE = "ds-store"
@@ -226,6 +235,9 @@ class Pinned:
     repository: str
     tag: str
     digest: str
+    # The repository /public/version names: `image.source`, else
+    # `sourceCode.url`.
+    source: str = ""
 
     def reference(self, app_version: str) -> str:
         """Return the pulled reference: digest, else tag, else the appVersion."""
@@ -237,8 +249,14 @@ class Pinned:
         return f"{self.repository}:{self.tag or app_version}"
 
 
-def pinned_images(values: Mapping[str, Any], path: str = "") -> Iterator[Pinned]:
+def pinned_images(
+    values: Mapping[str, Any], path: str = "", default_source: str | None = None
+) -> Iterator[Pinned]:
     """Every first-party `image` map in VALUES, depth first."""
+    if default_source is None:
+        source_code = values.get("sourceCode")
+        url = source_code.get("url") if isinstance(source_code, Mapping) else None
+        default_source = str(url or "")
     for key, value in values.items():
         here = f"{path}.{key}"
         if not isinstance(value, Mapping):
@@ -252,9 +270,10 @@ def pinned_images(values: Mapping[str, Any], path: str = "") -> Iterator[Pinned]
                     repository=repository,
                     tag=str(value.get("tag") or ""),
                     digest=str(value.get("digest") or ""),
+                    source=str(value.get("source") or default_source),
                 )
             continue
-        yield from pinned_images(value, here)
+        yield from pinned_images(value, here, default_source)
 
 
 def contract_floors(
@@ -425,6 +444,26 @@ def check(
     return checker.findings
 
 
+def source_findings(
+    images: Sequence[Pinned], labels_of: Callable[[Pinned], Mapping[str, str]]
+) -> list[str]:
+    """Return a finding for each image whose source isn't its SOURCE label."""
+    findings: list[str] = []
+    for image in images:
+        label = labels_of(image).get(SOURCE)
+        if label is None:
+            findings.append(
+                f"::error::{image.path} ({image.service}) has no {SOURCE} label"
+            )
+        elif label != image.source:
+            findings.append(
+                f"::error::{image.path} ({image.service}): /public/version would "
+                f"name {image.source or 'no repository'}, but the image was built "
+                f"in {label} ({SOURCE}); set {image.path}.source to it"
+            )
+    return findings
+
+
 # --- the registry ---------------------------------------------------------
 
 
@@ -533,19 +572,26 @@ def run_check(args: argparse.Namespace, fetch: Fetch = http_fetch) -> int:
     """Run the `check` subcommand."""
     images = list(pinned_images(read_values(args.values)))
 
+    cache: dict[str, Mapping[str, str]] = {}
+
     def labels_of(image: Pinned) -> Mapping[str, str]:
-        return with_retries(image.reference(args.app_version), fetch)
+        reference = image.reference(args.app_version)
+        if reference not in cache:
+            cache[reference] = with_retries(reference, fetch)
+        return cache[reference]
 
     migrations = args.migrations or args.root / MIGRATIONS
     floors, problems = contract_floors(args.root, migrations)
     findings = problems + check(images, labels_of, floors)
+    findings += source_findings(images, labels_of)
     for finding in findings:
         print(finding)
     if findings:
         return 1
     print(
         f"release ordering holds for {len(images)} pinned image(s) (the "
-        f"registry's labels; {len(floors)} versioned contract migration(s))"
+        "registry's labels, and each image's source; "
+        f"{len(floors)} versioned contract migration(s))"
     )
     return 0
 
