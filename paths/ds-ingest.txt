@@ -1,0 +1,41 @@
+# git filter-repo --paths-from-file for Distant-Signal/ds-ingest (repo split
+# spec §3.1, §5.6, §9 phase 7). Run on a fresh mirror clone of
+# Distant-Signal/distant-signal (the rewritten history), with no identity or
+# message callbacks and no --path-rename. The current paths, then their
+# historical names: exact files, from every rename `git log -M
+# --diff-filter=R` reports on main, chains followed (an old directory
+# name would pull in unrelated files).
+
+# Current paths
+crates/ingest-writer/
+crates/movement-relay/
+crates/darwin-relay/
+crates/trust-consumer/
+crates/trust-backlog-consumer/
+crates/full-coverage-consumer/
+crates/movement-feed/
+docker/ingest-writer.Dockerfile
+docker/ingest-writer.Dockerfile.dockerignore
+docker/movement-relay.Dockerfile
+docker/movement-relay.Dockerfile.dockerignore
+docker/darwin-relay.Dockerfile
+docker/darwin-relay.Dockerfile.dockerignore
+docker/trust-consumer.Dockerfile
+docker/trust-consumer.Dockerfile.dockerignore
+docker/trust-backlog-consumer.Dockerfile
+docker/trust-backlog-consumer.Dockerfile.dockerignore
+docker/full-coverage-consumer.Dockerfile
+docker/full-coverage-consumer.Dockerfile.dockerignore
+docs/darwin-pushport.md
+docs/full-coverage-consumer.md
+docs/ingest-streams-deadletter.md
+docs/movement-events-deadletter.md
+docs/ingest-phase0-runbook.md
+docs/ingest-phase5-runbook.md
+scripts/backfill-gbtt-from-movement-stream.py
+scripts/tests/test_backfill_gbtt_from_movement_stream.py
+scripts/fc-windowed-analysis.py
+
+# Historical names
+reference-data/stanox-crs.csv
+reference-data/stanox-crs.md

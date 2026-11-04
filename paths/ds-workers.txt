@@ -1,0 +1,27 @@
+# git filter-repo --paths-from-file for Distant-Signal/ds-workers (repo split
+# spec §3.1, §5.6, §9 phase 8). Run on a fresh mirror clone of
+# Distant-Signal/distant-signal (the rewritten history), with no identity or
+# message callbacks and no --path-rename. The current paths, then their
+# historical names: exact files, from every rename `git log -M
+# --diff-filter=R` reports on main, chains followed (an old directory
+# name would pull in unrelated files).
+
+# Current paths
+crates/aggregator/
+crates/enricher/
+crates/notifier/
+docker/aggregator.Dockerfile
+docker/aggregator.Dockerfile.dockerignore
+docker/enricher.Dockerfile
+docker/enricher.Dockerfile.dockerignore
+docker/notifier.Dockerfile
+docker/notifier.Dockerfile.dockerignore
+docs/cold-archive.md
+docs/enricher-anthropic.md
+docs/enricher-category-backfill.md
+docs/enricher-model-eval.md
+docs/enricher-openai.md
+scripts/export-incident-history-for-replay.sql
+scripts/incident-history-text-churn.sql
+
+# Historical names
