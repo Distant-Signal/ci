@@ -104,9 +104,9 @@ usable by the hosted Renovate app: no private presets, registries or
 `paths/<repo>.txt` is the `git filter-repo --paths-from-file` list each
 repository was extracted from the landing repository with (repo split spec
 §5.6): its current paths, then the historical names they had. ds-core
-(phase 4) and ds-deploy (phase 5) have been extracted; ds-pollers,
-ds-ingest and ds-workers (phases 6 to 8) are the lists for their
-extractions.
+(phase 4), ds-deploy (phase 5) and ds-pollers (phase 6) have been
+extracted; ds-ingest, ds-workers and ds-api (phases 7 to 9) are the lists
+for their extractions.
 
 ## Organisation settings
 

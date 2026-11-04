@@ -1,0 +1,55 @@
+# git filter-repo --paths-from-file for Distant-Signal/ds-api (repo split
+# spec §3.1, §5.6, §9 phase 9). Run on a fresh mirror clone of
+# Distant-Signal/distant-signal (the rewritten history), with no identity or
+# message callbacks and no --path-rename. The current paths, then their
+# historical names: exact files, from every rename `git log -M
+# --diff-filter=R` reports on main, chains followed (an old directory
+# name would pull in unrelated files).
+
+# Current paths
+crates/api/
+crates/trip-planner/
+crates/schedule-ingest/
+crates/schedule-reference/
+api-types/
+docker/api.Dockerfile
+docker/api.Dockerfile.dockerignore
+docker/schedule-ingest.Dockerfile
+docker/schedule-ingest.Dockerfile.dockerignore
+docker/schedule-reference.Dockerfile
+docker/schedule-reference.Dockerfile.dockerignore
+docs/api-changelog.md
+docs/connected-apps.md
+docs/session-revocation.md
+docs/usage-analytics.md
+docs/journey-breaks.md
+docs/trust-reason-codes.md
+docs/shared-train-identity-backfill.md
+docs/public-api.md
+docs/feeds.md
+docs/personal-api-tokens.md
+scripts/diff-api-surface.py
+scripts/tests/test_diff_api_surface.py
+scripts/tests/fixtures/api-surface/
+scripts/measure-transit-trip-planning.py
+scripts/tests/test_measure_transit_trip_planning.py
+scripts/rollback-tracked-trains-as-journeys.sql
+scripts/backfill-2026-10-06-incident-source-removed.sql
+docs/specs/personal-api-tokens.md
+docs/personal-data-retention.md
+scripts/remediate-2026-09-25-cross-matched-trains-row.sql
+scripts/test-remediate-2026-09-25-cross-matched-trains-row.sh
+scripts/remediate-db2-8-train-origin.sql
+scripts/test-remediate-db2-8-train-origin.sh
+scripts/test-trains-train-id-service-date-unique-migration.sh
+
+# Historical names
+migrations/20260510023522_initial.sql
+reference-data/fixed-link-operators.csv
+reference-data/operator-groups.csv
+reference-data/operator-names.csv
+reference-data/station-groups.csv
+src/app.rs
+src/data/config.rs
+src/main.rs
+src/routes/health.rs
