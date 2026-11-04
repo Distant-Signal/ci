@@ -32,7 +32,7 @@ Each check shows as `<calling job> / <job in the reusable workflow>`, e.g.
 | `rust-ci.yml` | clippy in both feature sets (`-D warnings`), the MSRV check, cargo-deny, rustfmt, build and test | Inputs: toolchain, MSRV, apt packages, an extra test command. |
 | `rust-db-tests.yml` | builds the DB test archive once, then one job per pass against its own Postgres and Redis | The archive command and the passes come from the repository's `.github/db-tests.toml` (format in `scripts/db-tests-passes.py`). The service images are inputs. |
 | `node-ci.yml` | `npm ci`, ESLint, the npm licence gate, Prettier, `tsc --noEmit`, extra npm scripts, `npm test`, `npm run build` | |
-| `image.yml` | builds one image; when publishing, pushes it to `ghcr.io/<owner>/images/<service>`, attests provenance, signs it and records its digest | Call it from a matrix. Reproducible digests, registry layer cache. Extra labels through the `labels` input. |
+| `image.yml` | builds one image; when publishing, pushes it to `ghcr.io/<owner>/images/<service>`, attests provenance, signs and verifies it and records its digest | Call it from a matrix. Reproducible digests, registry layer cache. Extra labels through the `labels` input. Signing and attesting survive Rekor timeouts (below). |
 | `helm-chart.yml` | lints a chart; when publishing, packages it as `<version>+build.<run>.sha.<sha>` and pushes it to `ghcr.io/<owner>/charts` | Doesn't sign: sign in your own job (below). |
 | `scripts-lint.yml` | shellcheck, shfmt, ruff, mypy, actionlint, hadolint and `lint-containers.py`, then the script tests | Runs in the calling repository's uv project: it keeps its own `lint` dependency group, `uv.lock` and ruff/mypy settings. |
 | `dependency-scan.yml` | OSV-Scanner over every lockfile, blocking on critical and fixable findings; a tracking issue on the schedule | |
@@ -44,8 +44,9 @@ the permissions the caller must grant.
 
 ### Composite actions (`actions/`)
 
-- `actions/cosign-sign`: keyless `cosign sign` by digest, retried after a
-  Rekor conflict, with an optional `cosign verify`. A composite action runs in
+- `actions/cosign-sign`: keyless `cosign sign` by digest, retried, with an
+  optional `cosign verify` against `verify-identity` (or
+  `verify-identity-regexp`) and `verify-issuer`. A composite action runs in
   the calling job, so the signature's certificate identity is the calling
   workflow, which is what Flux pins for the chart. A reusable workflow's job
   signs as the reusable workflow instead, so `image.yml`'s image signatures
@@ -59,6 +60,43 @@ the permissions the caller must grant.
   deleted one fails; a breaking change means publishing a new version
   (`v2.json`) rather than editing the old one.
 
+### Signing and attesting through Rekor timeouts
+
+Sigstore's transparency log, Rekor, times out now and then. cosign retries
+a timed-out upload itself, and when the first upload had in fact landed,
+its retry gets 409 `createLogEntryConflict` and `cosign sign` fails though
+the log entry exists; a fresh `cosign sign` can do the same again
+(distant-signal's Containers run 41751291688, 2026-11-04: three attempts,
+three conflicts). `actions/attest-build-provenance` had no retry at all.
+So, with the logic in `scripts/sigstore-retry.py` (tested with a fake
+cosign and gh):
+
+- `actions/cosign-sign` tries `cosign sign` up to `attempts` times
+  (default 5, backing off 15, 30, 60, then 120 s; inputs `attempts` and
+  `backoff`). Given an identity, it runs
+  `cosign verify` after every attempt, failed ones included: after a
+  success the verify must pass; after a failure a passing verify passes
+  the step, and anything else is retried. Without an identity a failure is
+  only retried. A failure never passes on less than the verify a success
+  gets, and the verify must report a cosign signature payload for the
+  digest: `cosign verify` also accepts the provenance attestation, which
+  is not a signature. cosign v3 fails a conflict before it pushes the signature, so the
+  verify rescues a failure whose signature was pushed, or a digest an
+  earlier run already signed (below), not a conflict on a new digest:
+  those still rely on the retries. `image.yml` verifies
+  against `^https://github.com/<ci repo>/.github/workflows/image.yml@`
+  (any ref); chart callers pass their own workflow as `verify-identity`.
+- `image.yml` attests up to five times. After a failed attempt,
+  `gh attestation verify oci://<image>@<digest> --repo <caller>
+  --signer-workflow <ci repo>/.github/workflows/image.yml` decides: an
+  attestation that verifies ends the retries; otherwise it backs off (15,
+  30, 60, then 120 s) and tries again, and after a fifth failure the job
+  fails unless one verifies.
+
+Image digests are reproducible, so an unchanged image's signature or
+attestation from an earlier run of the same identity also verifies, and
+counts: it is as valid for that digest as a new one.
+
 ### Scripts (`scripts/`)
 
 `lint-scripts.py`, `lint-containers.py`, `check-npm-licences.py`,
@@ -66,6 +104,7 @@ the permissions the caller must grant.
 `paths-changed.py`, `db-tests-passes.py`, `image-labels.py`,
 `openapi-breaking.py` and `gen-rust-dockerfiles.py`. They check the
 repository they are run from (the working directory), not this one.
+`sigstore-retry.py` is the signing and attestation retry logic (above).
 
 `gen-rust-dockerfiles.py` writes (and with `--check` verifies) the
 cargo-chef builder stages of a Rust repository's `docker/<service>.Dockerfile`

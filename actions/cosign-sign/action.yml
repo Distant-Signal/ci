@@ -11,10 +11,19 @@ description: >-
 # Flux verifies the chart against that identity (repo split spec §5.9). A
 # reusable workflow's job signs as the reusable workflow instead.
 #
-# Why retried: cosign retries a Rekor upload that times out, and when the
-# first attempt had in fact landed the retry fails with 409
-# createLogEntryConflict (seen on main, 2026-10-30). A fresh `cosign sign`
-# makes new ephemeral keys, so its entry can't conflict.
+# Why retried, and why verified on a failure: cosign retries a Rekor
+# upload that times out, and when the timed-out upload had in fact landed,
+# its retry fails with 409 createLogEntryConflict (seen on main,
+# 2026-10-30). A fresh `cosign sign` makes new ephemeral keys, but can hit
+# the same timeout and conflict again (three times in distant-signal's
+# Containers run 41751291688, 2026-11-04), so it tries five times over
+# about four minutes of backoff. Given an identity, a failed
+# attempt is followed by `cosign verify`: a signature for the digest that
+# verifies against the identity and issuer (one pushed before the failure,
+# or an earlier run's of the same reproducible digest) passes the step, as
+# it would after a successful sign; anything else is retried. Without an
+# identity a failure is only retried, never passed. The logic is
+# scripts/sigstore-retry.py's `sign` (tested with a fake cosign).
 
 inputs:
   ref:
@@ -23,12 +32,25 @@ inputs:
   attempts:
     description: How many times to try `cosign sign` before failing.
     required: false
-    default: "3"
+    default: "5"
+  backoff:
+    description: >-
+      Seconds to wait after the first failed attempt, doubling after each
+      later one (15, 30, 60, 120 by default).
+    required: false
+    default: "15"
   verify-identity:
     description: >-
       When set, `cosign verify` the signature against this certificate
       identity after signing, so a broken signing setup fails here rather
-      than at install time.
+      than at install time, and after a failed attempt, which passes when
+      a signature for the digest verifies.
+    required: false
+    default: ""
+  verify-identity-regexp:
+    description: >-
+      As verify-identity, but a regular expression the certificate identity
+      must match (`--certificate-identity-regexp`). At most one of the two.
     required: false
     default: ""
   verify-issuer:
@@ -39,30 +61,26 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: cosign sign${{ inputs.verify-identity != '' && ' and verify' || '' }}
+    - name: cosign sign${{ (inputs.verify-identity != '' || inputs.verify-identity-regexp != '') && ' and verify' || '' }}
       shell: bash
       env:
         REF: ${{ inputs.ref }}
         ATTEMPTS: ${{ inputs.attempts }}
+        BACKOFF: ${{ inputs.backoff }}
         IDENTITY: ${{ inputs.verify-identity }}
+        IDENTITY_REGEXP: ${{ inputs.verify-identity-regexp }}
         ISSUER: ${{ inputs.verify-issuer }}
       run: |
         set -euo pipefail
-        if [[ ! "${REF}" =~ @sha256:[0-9a-f]{64}$ ]]; then
-          echo "::error::cosign-sign signs by digest only; got '${REF}'" >&2
+        args=(sign --ref "${REF}" --attempts "${ATTEMPTS}" --backoff "${BACKOFF}" --issuer "${ISSUER}")
+        if [[ -n "${IDENTITY}" && -n "${IDENTITY_REGEXP}" ]]; then
+          echo "::error::set verify-identity or verify-identity-regexp, not both" >&2
           exit 1
+        elif [[ -n "${IDENTITY}" ]]; then
+          args+=(--identity "${IDENTITY}")
+        elif [[ -n "${IDENTITY_REGEXP}" ]]; then
+          args+=(--identity-regexp "${IDENTITY_REGEXP}")
         fi
-        attempt=1
-        until cosign sign --yes "${REF}"; do
-          if ((attempt >= ATTEMPTS)); then
-            exit 1
-          fi
-          echo "::warning::cosign sign attempt ${attempt} failed"
-          sleep $((attempt * 10))
-          attempt=$((attempt + 1))
-        done
-        if [[ -n "${IDENTITY}" ]]; then
-          cosign verify "${REF}" \
-            --certificate-oidc-issuer "${ISSUER}" \
-            --certificate-identity "${IDENTITY}" > /dev/null
-        fi
+        # The whole repository is checked out with the action, so its
+        # scripts sit two levels up, at the same commit.
+        python3 "${GITHUB_ACTION_PATH}/../../scripts/sigstore-retry.py" "${args[@]}"
