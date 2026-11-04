@@ -1,0 +1,12 @@
+# ds-core's and ds-api's shape: the crate is a workspace member (no
+# source), so its label is v<its version>.
+version = 4
+
+[[package]]
+name = "api"
+version = "0.1.0"
+dependencies = ["ds-store"]
+
+[[package]]
+name = "ds-store"
+version = "0.1.0"

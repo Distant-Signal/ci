@@ -1,0 +1,58 @@
+name: Prune build cache
+
+# image.yml writes each image's BuildKit layer cache to
+# ghcr.io/<owner>/images/buildcache:<service>, one shared package for the
+# organisation. distant-signal (the frontend), ds-pollers, ds-ingest,
+# ds-workers and ds-api write it on a push to main and on their weekly
+# forced runtime rebuild (Mondays 02:41 UTC, before this run); ds-core
+# writes ds-migrate's on a release. Each write moves the tag to a new
+# manifest and leaves the old one untagged, still stored, so untagged
+# versions pile up. This deletes them weekly. A build running meanwhile is unaffected: it reads and writes only
+# the tagged versions. The tagged versions (the live cache) are never
+# touched, and neither is any image package: `package-name` is the
+# buildcache package only.
+#
+# The buildcache images are single OCI image manifests (image.yml's
+# `image-manifest=true`), not multi-arch indexes, so an untagged version is
+# never a child of a tagged one that is still in use.
+#
+# It lives here, not in one of the repositories that write the cache: the
+# package is shared, and deleting versions takes the Admin role on it.
+# GitHub's docs ("Deleting and restoring a package", REST API with
+# GITHUB_TOKEN): the token needs admin permission to the package, which a
+# workflow only has by default on a package its own repository published;
+# for any other, the repository must be granted the Admin role. So the
+# images/buildcache package's settings ("Manage Actions access") must give
+# Distant-Signal/ci the Admin role. The repositories that only write the
+# cache need Write, nothing more.
+
+on:
+  schedule:
+    - cron: "17 4 * * 1" # Mondays 04:17 UTC, off the hour
+  workflow_dispatch:
+
+concurrency:
+  group: prune-buildcache
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  prune:
+    name: delete untagged buildcache versions
+    runs-on: ubuntu-26.04
+    permissions:
+      # Deleting a package version needs packages: write here and the Admin
+      # role for this repository on the package (see above).
+      packages: write
+    steps:
+      - name: Delete untagged versions of images/buildcache
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
+        with:
+          # Relative to the repository's owner (the action's `owner`
+          # default), so it follows the owner like image.yml's paths.
+          package-name: images/buildcache
+          package-type: container
+          delete-only-untagged-versions: "true"
+          # 0: keep no untagged version (the action's documented form).
+          min-versions-to-keep: 0
