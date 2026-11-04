@@ -26,6 +26,16 @@ name: Dependency vulnerability scan
 #
 # Each job below asks for only what it needs, so a pull request's scan job
 # never holds issues: write (INF-14).
+#
+# Scanning another repository: `repository` checks out that public
+# repository (its default branch) instead of the caller, and `report: true`
+# runs the schedule's path (never failing on findings, the tracking issue)
+# from any event, e.g. workflow_dispatch. The tracking issue is always
+# filed in the calling repository, so a repository with Issues off can
+# still be scanned from one that has them: distant-signal's
+# dependency-scan-all.yml does that for every Distant Signal repository,
+# one matrix leg per repository, each with its own `issue-label` and
+# `artifact-name`.
 
 # ============================================================================
 # TOOL CHOICE: the plain OSV-Scanner CLI binary, not the osv-scanner-action
@@ -91,7 +101,8 @@ name: Dependency vulnerability scan
 #   (gated `if: always()`) opens or updates a single tracking issue with the
 #   `issue-label` label (one deduplicated open issue, a comment instead of a
 #   second issue while one is open, closed with a comment when clean). The
-#   repository needs issues enabled for that.
+#   calling repository needs issues enabled for that. `report: true` takes
+#   this path from any event.
 
 on:
   workflow_call:
@@ -101,6 +112,26 @@ on:
         type: string
         required: false
         default: dependency-vulnerability
+      repository:
+        description: >-
+          owner/name of a public repository to scan (its default branch)
+          instead of the calling one. The tracking issue still goes to the
+          calling repository, its title naming this one.
+        type: string
+        required: false
+        default: ""
+      report:
+        description: >-
+          Take the schedule's path whatever the event: never fail on
+          findings, and open, update or close the tracking issue.
+        type: boolean
+        required: false
+        default: false
+      artifact-name:
+        description: The scan results artifact's name (unique per workflow run).
+        type: string
+        required: false
+        default: osv-scanner-results
       runs-on:
         description: The runner label.
         type: string
@@ -126,6 +157,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.repository || github.repository }}
+          persist-credentials: false
 
       - name: Download and verify OSV-Scanner v2.6.0 (linux_amd64)
         # Pinned to the exact release tag + asset name + published SHA-256
@@ -197,16 +231,17 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: osv-scanner-results
+          name: ${{ inputs.artifact-name }}
           path: osv-results.json
           retention-days: 30
 
       # Neutral (grey) when there are non-blocking findings, success when
       # there are none. Never fails the run. Known quirk: a check run made
       # with GITHUB_TOKEN joins the GitHub Actions check suite, so it may be
-      # listed under a different workflow run in the Checks tab.
+      # listed under a different workflow run in the Checks tab. Only for
+      # the calling repository's own commit.
       - name: Post the non-blocking findings check run
-        if: github.event_name != 'schedule' && steps.scan.outcome == 'success'
+        if: github.event_name != 'schedule' && !inputs.report && inputs.repository == '' && steps.scan.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           COUNT: ${{ steps.scan.outputs.high_or_critical_count }}
@@ -224,7 +259,7 @@ jobs:
             || echo "::warning::Couldn't create the findings check run; ${summary}"
 
       - name: Fail on blocking findings (pull_request/push only)
-        if: github.event_name != 'schedule'
+        if: github.event_name != 'schedule' && !inputs.report
         run: |
           count="${{ steps.scan.outputs.blocking_count }}"
           if [[ "${count}" -gt 0 ]]; then
@@ -236,7 +271,7 @@ jobs:
   # Cron-only alerting path; see the top of this file.
   report-findings:
     needs: scan
-    if: always() && github.event_name == 'schedule'
+    if: always() && (github.event_name == 'schedule' || inputs.report)
     runs-on: ${{ inputs.runs-on }}
     permissions:
       issues: write
@@ -247,16 +282,21 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: osv-scanner-results
+          name: ${{ inputs.artifact-name }}
 
       - name: Open, update, or close the tracking issue
         env:
           ISSUE_LABEL: ${{ inputs.issue-label }}
+          SCANNED: ${{ inputs.repository }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const fs = require('fs');
             const label = process.env.ISSUE_LABEL;
+            // Another repository's scan: name it in titles and bodies.
+            const scanned = process.env.SCANNED;
+            const prefix = scanned ? `${scanned}: ` : '';
+            const scope = scanned ? ` of ${scanned}` : '';
             const highOrCritical = parseInt('${{ needs.scan.outputs.high_or_critical_count }}', 10) || 0;
             const total = '${{ needs.scan.outputs.total_count }}';
             // A failed scan job (e.g. no valid scanner JSON) leaves its
@@ -281,7 +321,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: issue.number,
-                  body: `The daily dependency vulnerability scan failed (result: ${{ needs.scan.result }}), so it is inconclusive, not clean. Leaving this issue open: ${runUrl}`,
+                  body: `The daily dependency vulnerability scan${scope} failed (result: ${{ needs.scan.result }}), so it is inconclusive, not clean. Leaving this issue open: ${runUrl}`,
                 });
               }
               // No tracking issue open: open one so a failed cron scan isn't
@@ -290,8 +330,8 @@ jobs:
                 await github.rest.issues.create({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  title: 'Dependency vulnerability scan failed (inconclusive)',
-                  body: `The daily dependency vulnerability scan failed (result: ${{ needs.scan.result }}), so it is inconclusive, not clean.\n\nWorkflow run: ${runUrl}`,
+                  title: `${prefix}Dependency vulnerability scan failed (inconclusive)`,
+                  body: `The daily dependency vulnerability scan${scope} failed (result: ${{ needs.scan.result }}), so it is inconclusive, not clean.\n\nWorkflow run: ${runUrl}`,
                   labels: [label],
                 });
               }
@@ -305,7 +345,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: issue.number,
-                  body: `The daily dependency vulnerability scan is clean again (0 HIGH/CRITICAL findings): ${runUrl}`,
+                  body: `The daily dependency vulnerability scan${scope} is clean again (0 HIGH/CRITICAL findings): ${runUrl}`,
                 });
                 await github.rest.issues.update({
                   owner: context.repo.owner,
@@ -345,7 +385,7 @@ jobs:
             }
 
             const body = [
-              `The daily dependency vulnerability scan found ${highOrCritical} HIGH/CRITICAL (CVSS >= 7.0) finding(s), out of ${total} total advisory group(s).`,
+              `The daily dependency vulnerability scan${scope} found ${highOrCritical} HIGH/CRITICAL (CVSS >= 7.0) finding(s), out of ${total} total advisory group(s).`,
               '',
               `Workflow run: ${runUrl}`,
               '',
@@ -363,7 +403,7 @@ jobs:
               await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                title: 'Dependency vulnerability scan: HIGH/CRITICAL findings',
+                title: `${prefix}Dependency vulnerability scan: HIGH/CRITICAL findings`,
                 body,
                 labels: [label],
               });

@@ -35,7 +35,7 @@ Each check shows as `<calling job> / <job in the reusable workflow>`, e.g.
 | `image.yml` | builds one image; when publishing, pushes it to `ghcr.io/<owner>/images/<service>`, attests provenance, signs it and records its digest | Call it from a matrix. Reproducible digests, registry layer cache. Extra labels through the `labels` input. |
 | `helm-chart.yml` | lints a chart; when publishing, packages it as `<version>+build.<run>.sha.<sha>` and pushes it to `ghcr.io/<owner>/charts` | Doesn't sign: sign in your own job (below). |
 | `scripts-lint.yml` | shellcheck, shfmt, ruff, mypy, actionlint, hadolint and `lint-containers.py`, then the script tests | Runs in the calling repository's uv project: it keeps its own `lint` dependency group, `uv.lock` and ruff/mypy settings. |
-| `dependency-scan.yml` | OSV-Scanner over every lockfile, blocking on critical and fixable findings; a tracking issue on the schedule | |
+| `dependency-scan.yml` | OSV-Scanner over every lockfile, blocking on critical and fixable findings; a tracking issue on the schedule | `repository` and `report: true` scan another public repository and file its tracking issue in the caller (distant-signal's daily scan of every repository). |
 | `identity.yml` | commits use the current identity, without AI attribution | §5.10 |
 | `licence.yml` | every tracked `LICENSE` is the canonical GNU AGPL v3 text, byte for byte | Checked against a pinned SHA-256, offline. Needs only a checkout, so any repository can call it. |
 
@@ -64,7 +64,7 @@ the permissions the caller must grant.
 `lint-scripts.py`, `lint-containers.py`, `check-npm-licences.py`,
 `check-commit-identity.py`, `check-licence.py`, `check-bench-gates.py`,
 `paths-changed.py`, `db-tests-passes.py`, `image-labels.py`,
-`openapi-breaking.py` and `gen-rust-dockerfiles.py`. They check the
+`openapi-breaking.py`, `gen-rust-dockerfiles.py` and `release-order.py`. They check the
 repository they are run from (the working directory), not this one.
 
 `gen-rust-dockerfiles.py` writes (and with `--check` verifies) the
@@ -75,6 +75,15 @@ files and their build-context allowlists, from that repository's
 workflow pins. It writes the monorepo's Dockerfiles byte for byte when given
 the monorepo's settings. A reusable workflow fetches them from its
 own commit (`job.workflow_sha`), so a caller's pin covers the scripts too.
+
+`release-order.py` makes the images' version labels (`labels`: each
+Rust image's `org.distant-signal.core-version` from Cargo.lock, the
+frontend's `org.distant-signal.api-build` from its api pin) for a
+containers workflow's matrix, and checks a chart's pinned images against
+the release-ordering rules (`check --registry`: ds-deploy's chart checks
+and ds-core's tag job). Like `gen-rust-dockerfiles.py`, a repository runs
+it from a checkout of this repository at its workflow pin.
+
 To run one locally, from the root of the repository to check:
 
 ```sh
