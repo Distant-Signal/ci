@@ -1,8 +1,11 @@
 name: Image
 
 # Reusable: build one container image and, when `publish` is true, push it
-# to GHCR, attest its build provenance, sign it (keyless cosign, retried)
-# and output its digest. Call it once per image, from a matrix:
+# to GHCR, attest its build provenance, sign it (keyless cosign) and verify
+# the signature, and output its digest. Signing and attesting are retried
+# through Rekor timeouts, and a failed attempt passes only when a signature
+# or attestation for the digest verifies (scripts/sigstore-retry.py). Call
+# it once per image, from a matrix:
 #
 #   jobs:
 #     build-and-push:
@@ -34,8 +37,9 @@ name: Image
 # Signing identity: a reusable workflow's job signs as the reusable
 # workflow, so the image signature's certificate identity is
 # https://github.com/Distant-Signal/ci/.github/workflows/image.yml@<sha>,
-# not the calling workflow. Nothing verifies image signatures today (Flux
-# verifies only the chart, which its caller signs in its own job with
+# not the calling workflow. This job verifies the signature against that
+# identity (any ref), and nothing else verifies image signatures today
+# (Flux verifies only the chart, which its caller signs in its own job with
 # actions/cosign-sign). The provenance attestation records the calling
 # repository as its source: `gh attestation verify oci://<image>@<digest>
 # --repo <owner>/<repo> --signer-workflow
@@ -297,14 +301,126 @@ jobs:
       # stored in GitHub's attestation API and, as an OCI referrer, next to
       # the image; neither changes the image's own digest. No storage
       # record.
+      #
+      # Up to five attempts, because the action's Rekor upload times out
+      # now and then and the action doesn't retry (distant-signal's
+      # Containers run 41751291688, 2026-11-04). After a failed attempt,
+      # scripts/sigstore-retry.py's `attestation` checks with `gh
+      # attestation verify` (this repository, signed by this workflow):
+      # found, and the attestation landed after all, or an earlier run's
+      # for the same digest verifies (found=true ends the retries); not
+      # found, and it sleeps (15, 30, 60, then 120 s) before the next
+      # attempt. After a fifth failure it must find one, or the job fails.
       - name: Attest build provenance
+        id: attest1
         if: inputs.publish
+        continue-on-error: true
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
           create-storage-record: false
+
+      - name: Check for the attestation, then back off (after attempt 1)
+        id: check1
+        if: inputs.publish && steps.attest1.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUBJECT: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          SIGNER_WORKFLOW: ${{ job.workflow_repository }}/.github/workflows/image.yml
+        run: |
+          python3 "${DS_CI}/scripts/sigstore-retry.py" attestation --subject "${SUBJECT}" \
+            --repo "${GITHUB_REPOSITORY}" --signer-workflow "${SIGNER_WORKFLOW}" --backoff 15
+
+      - name: Attest build provenance (attempt 2)
+        id: attest2
+        if: inputs.publish && steps.attest1.outcome == 'failure' && steps.check1.outputs.found != 'true'
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Check for the attestation, then back off (after attempt 2)
+        id: check2
+        if: inputs.publish && steps.attest2.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUBJECT: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          SIGNER_WORKFLOW: ${{ job.workflow_repository }}/.github/workflows/image.yml
+        run: |
+          python3 "${DS_CI}/scripts/sigstore-retry.py" attestation --subject "${SUBJECT}" \
+            --repo "${GITHUB_REPOSITORY}" --signer-workflow "${SIGNER_WORKFLOW}" --backoff 30
+
+      - name: Attest build provenance (attempt 3)
+        id: attest3
+        if: inputs.publish && steps.attest2.outcome == 'failure' && steps.check2.outputs.found != 'true'
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Check for the attestation, then back off (after attempt 3)
+        id: check3
+        if: inputs.publish && steps.attest3.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUBJECT: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          SIGNER_WORKFLOW: ${{ job.workflow_repository }}/.github/workflows/image.yml
+        run: |
+          python3 "${DS_CI}/scripts/sigstore-retry.py" attestation --subject "${SUBJECT}" \
+            --repo "${GITHUB_REPOSITORY}" --signer-workflow "${SIGNER_WORKFLOW}" --backoff 60
+
+      - name: Attest build provenance (attempt 4)
+        id: attest4
+        if: inputs.publish && steps.attest3.outcome == 'failure' && steps.check3.outputs.found != 'true'
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Check for the attestation, then back off (after attempt 4)
+        id: check4
+        if: inputs.publish && steps.attest4.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUBJECT: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          SIGNER_WORKFLOW: ${{ job.workflow_repository }}/.github/workflows/image.yml
+        run: |
+          python3 "${DS_CI}/scripts/sigstore-retry.py" attestation --subject "${SUBJECT}" \
+            --repo "${GITHUB_REPOSITORY}" --signer-workflow "${SIGNER_WORKFLOW}" --backoff 120
+
+      - name: Attest build provenance (attempt 5)
+        id: attest5
+        if: inputs.publish && steps.attest4.outcome == 'failure' && steps.check4.outputs.found != 'true'
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      # The last word: a last failure passes only on an attestation that
+      # verifies.
+      - name: Require the attestation (after attempt 5)
+        if: inputs.publish && steps.attest5.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUBJECT: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          SIGNER_WORKFLOW: ${{ job.workflow_repository }}/.github/workflows/image.yml
+        run: |
+          python3 "${DS_CI}/scripts/sigstore-retry.py" attestation --subject "${SUBJECT}" \
+            --repo "${GITHUB_REPOSITORY}" --signer-workflow "${SIGNER_WORKFLOW}" --require
 
       - name: Install cosign
         if: inputs.publish
@@ -326,13 +442,29 @@ jobs:
           git -C "${dir}" fetch -q --depth=1 "${GITHUB_SERVER_URL}/${CI_REPOSITORY}.git" "${CI_SHA}"
           git -C "${dir}" checkout -q FETCH_HEAD
 
+      # The signature's certificate identity: this reusable workflow, at
+      # whatever ref its caller pinned (a SHA, or refs/heads/main for this
+      # repository's own self-test), as a regular expression (owner and
+      # repository names may hold dots, so they're escaped).
+      - name: Derive the signing identity
+        if: inputs.publish
+        env:
+          CI_REPOSITORY: ${{ job.workflow_repository }}
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_SERVER_URL}/${CI_REPOSITORY}"
+          echo "SIGN_IDENTITY_REGEXP=^${repo//./\\.}/\\.github/workflows/image\\.yml@" >> "${GITHUB_ENV}"
+
       # Signed once, by digest: a signature attaches to the digest, not a
-      # tag.
-      - name: Sign the published image
+      # tag. Verified against the identity after signing, and after a
+      # failed attempt (which passes when a signature for the digest
+      # verifies, e.g. an earlier run's of an unchanged image).
+      - name: Sign and verify the published image
         if: inputs.publish
         uses: ./.ds-ci/actions/cosign-sign
         with:
           ref: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          verify-identity-regexp: ${{ env.SIGN_IDENTITY_REGEXP }}
 
       # Matrix legs' outputs don't aggregate for a later job, so each leg
       # uploads its digest as its own artifact; the file name is unique per
