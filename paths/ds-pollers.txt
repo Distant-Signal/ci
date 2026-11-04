@@ -1,0 +1,44 @@
+# git filter-repo --paths-from-file for Distant-Signal/ds-pollers (repo split
+# spec §3.1, §5.6, §9 phase 6). Run on a fresh mirror clone of
+# Distant-Signal/distant-signal (the rewritten history), with no identity or
+# message callbacks and no --path-rename. The current paths, then their
+# historical names: exact files, from every rename `git log -M
+# --diff-filter=R` reports on main, chains followed (an old directory
+# name would pull in unrelated files).
+
+# Current paths
+crates/poller-incidents/
+crates/poller-irish-rail-gtfs/
+crates/poller-irish-rail-live/
+crates/poller-ldbws/
+crates/poller-nir-stations/
+crates/poller-stations/
+crates/poller-tfl/
+crates/poller-tocs/
+crates/poller-transit-schedule/
+docker/poller-incidents.Dockerfile
+docker/poller-incidents.Dockerfile.dockerignore
+docker/poller-irish-rail-gtfs.Dockerfile
+docker/poller-irish-rail-gtfs.Dockerfile.dockerignore
+docker/poller-irish-rail-live.Dockerfile
+docker/poller-irish-rail-live.Dockerfile.dockerignore
+docker/poller-ldbws.Dockerfile
+docker/poller-ldbws.Dockerfile.dockerignore
+docker/poller-nir-stations.Dockerfile
+docker/poller-nir-stations.Dockerfile.dockerignore
+docker/poller-stations.Dockerfile
+docker/poller-stations.Dockerfile.dockerignore
+docker/poller-tfl.Dockerfile
+docker/poller-tfl.Dockerfile.dockerignore
+docker/poller-tocs.Dockerfile
+docker/poller-tocs.Dockerfile.dockerignore
+docker/poller-transit-schedule.Dockerfile
+docker/poller-transit-schedule.Dockerfile.dockerignore
+docs/transit-networks.md
+scripts/check-crate-deps.py
+scripts/tests/test_check_crate_deps.py
+scripts/tests/fixtures/crate-deps/
+
+# Historical names
+reference-data/transit/metrolink-rail-links.csv
+reference-data/transit/net-rail-links.csv
