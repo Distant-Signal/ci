@@ -63,8 +63,17 @@ the permissions the caller must grant.
 
 `lint-scripts.py`, `lint-containers.py`, `check-npm-licences.py`,
 `check-commit-identity.py`, `check-licence.py`, `check-bench-gates.py`,
-`paths-changed.py`, `db-tests-passes.py`, `image-labels.py` and `openapi-breaking.py`. They check the repository they are run from (the
-working directory), not this one. A reusable workflow fetches them from its
+`paths-changed.py`, `db-tests-passes.py`, `image-labels.py`,
+`openapi-breaking.py` and `gen-rust-dockerfiles.py`. They check the
+repository they are run from (the working directory), not this one.
+
+`gen-rust-dockerfiles.py` writes (and with `--check` verifies) the
+cargo-chef builder stages of a Rust repository's `docker/<service>.Dockerfile`
+files and their build-context allowlists, from that repository's
+`docker/services.toml` (format in the script's docstring). A repository runs
+`--check` in CI from a checkout of this repository at the same commit as its
+workflow pins. It writes the monorepo's Dockerfiles byte for byte when given
+the monorepo's settings. A reusable workflow fetches them from its
 own commit (`job.workflow_sha`), so a caller's pin covers the scripts too.
 To run one locally, from the root of the repository to check:
 
