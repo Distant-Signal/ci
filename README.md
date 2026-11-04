@@ -2,10 +2,10 @@
 
 Shared CI for the [Distant Signal](https://github.com/Distant-Signal)
 repositories: reusable GitHub Actions workflows, composite actions, the
-Renovate preset and the scripts they run. The monorepo,
-[`distant-signal`](https://github.com/Distant-Signal/distant-signal), uses
-them first, so they are proven before any service moves to its own repository
-(the repository split spec, `docs/specs/repo-split.md` §5.5 and §8.3 there).
+Renovate preset and the scripts they run. Every repository of the split
+uses them: distant-signal (the frontend), ds-core, ds-api, ds-ingest,
+ds-pollers, ds-workers and ds-deploy (the repository split spec,
+distant-signal's `docs/specs/repo-split.md` §5.5 and §8.3).
 
 ## Using it
 
@@ -136,16 +136,17 @@ Postgres major holds, cargo 0.x minors on their own, TypeScript `<7`, and the
 custom managers for annotated `# renovate:` versions and digest-pinned images
 in workflow inputs. Each repository keeps only its local rules. It must stay
 usable by the hosted Renovate app: no private presets, registries or
-`postUpgradeTasks`.
+`postUpgradeTasks`. The app is installed but not running yet; until it is,
+dependency and image bumps are made by hand.
 
 ## Extraction path lists
 
 `paths/<repo>.txt` is the `git filter-repo --paths-from-file` list each
 repository was extracted from the landing repository with (repo split spec
-§5.6): its current paths, then the historical names they had. ds-core
-(phase 4), ds-deploy (phase 5) and ds-pollers (phase 6) have been
-extracted; ds-ingest, ds-workers and ds-api (phases 7 to 9) are the lists
-for their extractions.
+§5.6): its current paths, then the historical names they had. All six
+have been extracted: ds-core (phase 4), ds-deploy (phase 5), ds-pollers
+(phase 6), ds-ingest and ds-workers (phases 7 and 8) and ds-api (phase 9).
+The lists are kept as the record of each extraction.
 
 ## Organisation settings
 

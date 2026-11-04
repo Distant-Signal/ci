@@ -118,7 +118,7 @@
       // Valkey (the chart's `redis.image`, CI's redis services and the
       // compose files) stays on major 8. Valkey 9 writes RDB 80, which
       // redis:7.4.11 cannot load, so a major bump would remove the rollback
-      // in distant-signal's docs/valkey-migration.md. Move to 9
+      // in ds-deploy's docs/valkey-migration.md. Move to 9
       // deliberately, once that rollback is retired.
       "matchDatasources": ["docker"],
       "matchPackageNames": ["valkey/valkey"],
@@ -161,7 +161,7 @@
     {
       // A Postgres major changes the on-disk format: an 18 server can't
       // open a 16 data directory, so a major needs pg_upgrade on production
-      // (distant-signal's docs/postgres-18-upgrade.md), the
+      // (ds-deploy's docs/postgres-18-upgrade.md), the
       // postgres-pgbackrest image on the same base, and a recreated compose
       // volume. The bot can't do that (distant-signal PR #29); majors are
       // moved by hand.
