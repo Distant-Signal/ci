@@ -13,7 +13,8 @@ name: Rust DB tests
 #     rust-db-tests:
 #       uses: Distant-Signal/ci/.github/workflows/rust-db-tests.yml@<sha> # main
 #       with:
-#         toolchain: 1.88.0
+#         # renovate: datasource=rust-version depName=rust
+#         toolchain: 1.99.0
 #         # renovate: datasource=docker depName=postgres
 #         postgres-image: postgres:18@sha256:...
 #         # renovate: datasource=docker depName=valkey/valkey

@@ -18,7 +18,8 @@ jobs:
   rust:
     uses: Distant-Signal/ci/.github/workflows/rust-ci.yml@<sha> # main
     with:
-      toolchain: 1.88.0
+      # renovate: datasource=rust-version depName=rust
+      toolchain: 1.99.0
       msrv: 1.88.0
 ```
 
@@ -140,7 +141,8 @@ uv run python /path/to/Distant-Signal/ci/scripts/lint-scripts.py
 ```
 
 It extends FasterSpeeding/Piped's base preset and holds the shared rules:
-the non-major groups, the MSRV toolchain and `sqlx <0.9` holds, the Valkey and
+the non-major groups, the Rust toolchain group (each new stable is one PR;
+the MSRV stays put), the `sqlx <0.9` hold, the Valkey and
 Postgres major holds, cargo 0.x minors on their own, TypeScript `<7`, and the
 custom managers for annotated `# renovate:` versions and digest-pinned images
 in workflow inputs. Each repository keeps only its local rules. It must stay

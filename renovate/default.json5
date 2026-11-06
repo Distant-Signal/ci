@@ -126,35 +126,39 @@
       "enabled": false,
     },
     {
-      // The Rust toolchain is the MSRV (rust-version = "1.88"): every
-      // Dockerfile builds on rust:1.88-bookworm and every CI job passes
-      // `toolchain: 1.88.0`. A version bump would quietly move them off the
-      // MSRV, so only digest bumps are allowed. Move all of them, and
-      // rust-version, together and on purpose.
-      "matchDatasources": ["docker"],
-      "matchPackageNames": ["rust"],
+      // The build toolchain floats: each new stable is one PR that moves
+      // every Dockerfile's rust image, docker/services.toml's rust-image
+      // and every workflow's `toolchain:` together (the github-actions
+      // manager reads dtolnay/rust-toolchain's input as depName "rust",
+      // depType "uses-with"; a reusable workflow's `toolchain:` input needs
+      // a `# renovate: datasource=rust-version depName=rust` annotation).
+      // It comes after the non-major groups, so it wins over them. New
+      // clippy lints show up in that PR's CI.
+      "matchDepNames": ["rust"],
+      "matchUpdateTypes": ["major", "minor", "patch"],
+      "groupName": "rust toolchain",
+      "groupSlug": "rust-toolchain",
+    },
+    {
+      // The MSRV doesn't float: every workspace's rust-version = "1.88",
+      // checked by rust-ci.yml's msrv job with `msrv: 1.88.0`. Renovate
+      // doesn't extract that reusable workflow input (no annotation; checked
+      // with `renovate --platform=local --dry-run=extract`, 44.126.1), and
+      // this rule keeps any 1.88 rust it does find where it is. Move it, and
+      // rust-version and this rule, together and on purpose.
+      "matchDepNames": ["rust"],
+      "matchCurrentValue": "/^1\\.88([.-]|$)/",
       "matchUpdateTypes": ["major", "minor", "patch"],
       "enabled": false,
     },
     {
       // The workflows pin dtolnay/rust-toolchain@<sha> # v1 and pass the
-      // toolchain as an input. Upstream's 1.88.0 ref is a branch, not a
-      // tag, so a `# 1.88.0` comment broke Renovate's digest lookup; the v1
+      // toolchain as an input. Upstream's 1.88.0-style refs are branches,
+      // not tags, so a `# 1.88.0` comment broke Renovate's digest lookup; the v1
       // tag resolves. Only digest bumps of v1 go through; a v2 move is a
       // deliberate change.
       "matchManagers": ["github-actions"],
       "matchPackageNames": ["dtolnay/rust-toolchain"],
-      "matchUpdateTypes": ["major", "minor", "patch"],
-      "enabled": false,
-    },
-    {
-      // The github-actions manager also reads a `toolchain: 1.88.0` input
-      // itself (depName "rust", depType "uses-with"), which the docker rule
-      // above does not match: it proposed 1.88.0 -> 1.99.1 in every job,
-      // the msrv job included. Same reason: move the toolchain on purpose.
-      "matchManagers": ["github-actions"],
-      "matchDepNames": ["rust"],
-      "matchDepTypes": ["uses-with"],
       "matchUpdateTypes": ["major", "minor", "patch"],
       "enabled": false,
     },
@@ -193,7 +197,7 @@
       "groupName": null,
     },
     {
-      // sqlx 0.9 requires rustc 1.94; the MSRV is 1.88 (see the rust rules
+      // sqlx 0.9 requires rustc 1.94; the MSRV is 1.88 (see the MSRV rule
       // above). Move sqlx together with the MSRV, on purpose.
       "matchManagers": ["cargo"],
       "matchPackageNames": ["sqlx"],

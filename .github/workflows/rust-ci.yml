@@ -9,7 +9,8 @@ name: Rust CI
 #     rust:
 #       uses: Distant-Signal/ci/.github/workflows/rust-ci.yml@<sha> # main
 #       with:
-#         toolchain: 1.88.0
+#         # renovate: datasource=rust-version depName=rust
+#         toolchain: 1.99.0
 #         msrv: 1.88.0
 #
 # Clippy: plain cargo, per the "Strict Config Starting Points" guide: cargo
