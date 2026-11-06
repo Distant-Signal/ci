@@ -11,7 +11,7 @@ its own `docker/services.toml` (CONFIG below), not from this file:
   inputs = ["Cargo.toml", ".cargo/config.toml", "Cargo.lock", "crates", ...]
   build-packages = ["cmake", ...]        # optional; default BUILD_PACKAGES
   # renovate: datasource=docker depName=rust
-  rust-image = "1.88-bookworm@sha256:..."  # the builder's rust tag@digest
+  rust-image = "1.99.0-bookworm@sha256:..."  # the builder's rust tag@digest
   # renovate: datasource=crate depName=cargo-chef
   cargo-chef = "0.1.78"
   [services]
@@ -119,8 +119,8 @@ SERVICES: Mapping[str, Sequence[str]] = {}
 # same branch as the Dockerfiles' own FROM / `cargo install` lines, so its
 # PRs stay drift-free; keep each assignment on one line for its regex.
 # renovate: datasource=docker depName=rust
-RUST_TAG = "1.88-bookworm"
-RUST_DIGEST = "sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0"
+RUST_TAG = "1.99.0-bookworm"
+RUST_DIGEST = "sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6"
 # renovate: datasource=crate depName=cargo-chef
 CARGO_CHEF_VERSION = "0.1.78"
 # Build-time packages, the union over every service: rdkafka's vendored
