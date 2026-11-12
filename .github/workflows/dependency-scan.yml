@@ -50,13 +50,12 @@ name: Dependency vulnerability scan
 # that exact release rather than resolved via `latest` or a floating tag.
 #
 # The GitHub-only `google/osv-scanner-action` was deliberately NOT used here
-# even though this repo is real GitHub-hosted (unlike Distant-Signal-MCP/
-# coder-templates on the self-hosted Forgejo instance) -- using the plain CLI
-# binary keeps this workflow's actual scanning mechanism identical to what
-# the same job needs to look like on Forgejo Actions elsewhere, rather than
-# maintaining two different mechanisms for the same job across repos. A SARIF
-# upload to GitHub's native Code Scanning tab remains a reasonable optional
-# follow-on (GitHub-only, no Forgejo equivalent) but is not implemented here.
+# even though this repo is GitHub-hosted -- using the plain CLI binary keeps
+# this workflow's scanning mechanism identical to what the same job needs to
+# look like on other CI systems, rather than maintaining two different
+# mechanisms for the same job. A SARIF upload to GitHub's native Code
+# Scanning tab remains a reasonable optional follow-on (GitHub-only) but is
+# not implemented here.
 #
 # ============================================================================
 # SEVERITY THRESHOLD: no native --fail-on-severity flag exists in v2.6.0

@@ -13,7 +13,7 @@ name: Rust CI
 #         toolchain: 1.99.0
 #         msrv: 1.88.0
 #
-# Clippy: plain cargo, per the "Strict Config Starting Points" guide: cargo
+# Clippy: plain cargo, with cargo
 # flags before `--`, clippy-driver flags after it. `-D warnings` makes the
 # workspace's [workspace.lints] (kept at "warn" there, so a newer local
 # toolchain doesn't break builds) a hard gate. `--all-targets` lints tests,
