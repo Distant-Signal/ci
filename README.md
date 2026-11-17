@@ -121,7 +121,13 @@ Rust image's `org.distant-signal.core-version` from Cargo.lock, the
 frontend's `org.distant-signal.api-build` from its api pin) for a
 containers workflow's matrix, and checks a chart's pinned images against
 the release-ordering rules (`check --registry`: ds-deploy's chart checks
-and ds-core's tag job). Like `gen-rust-dockerfiles.py`, a repository runs
+and ds-core's tag job). `check --grant-floors FILE` (off by
+default; a no-op without it) adds rule 4: a TOML of `[[floor]]` `service`
+and `core` (`vX.Y.Z`) entries; once the pinned ds-migrate's core-version is
+at least a floor's core, that service's pinned image must carry a
+core-version of at least it (an image with no core-version label is an
+error for every rule, so it fails here too; a service the values don't pin
+is ignored). Like `gen-rust-dockerfiles.py`, a repository runs
 it from a checkout of this repository at its workflow pin.
 
 To run one locally, from the root of the repository to check:
