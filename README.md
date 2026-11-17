@@ -30,7 +30,7 @@ Each check shows as `<calling job> / <job in the reusable workflow>`, e.g.
 
 | Workflow | Jobs | Notes |
 |---|---|---|
-| `rust-ci.yml` | clippy in both feature sets (`-D warnings`), the MSRV check, cargo-deny, rustfmt, build and test | Inputs: toolchain, MSRV, apt packages, an extra test command. |
+| `rust-ci.yml` | clippy in both feature sets (`-D warnings`), the MSRV check, cargo-deny (bans, licences, sources and advisories all block), rustfmt, build and test | Inputs: toolchain, MSRV, apt packages, an extra test command, `check-ignore-expiry`. |
 | `rust-db-tests.yml` | builds the DB test archive once, then one job per pass against its own Postgres and Redis | The archive command and the passes come from the repository's `.github/db-tests.toml` (format in `scripts/db-tests-passes.py`). The service images are inputs. |
 | `node-ci.yml` | `npm ci`, ESLint, the npm licence gate, Prettier, `tsc --noEmit`, extra npm scripts, `npm test`, `npm run build` | |
 | `image.yml` | builds one image; when publishing, pushes it to `ghcr.io/<owner>/images/<service>`, attests provenance, signs and verifies it and records its digest | Call it from a matrix. Reproducible digests, registry layer cache. Extra labels through the `labels` input. Signing and attesting survive Rekor timeouts (below). |
@@ -60,6 +60,38 @@ the permissions the caller must grant.
   and checksum-verified oasdiff). A document new since the base passes, a
   deleted one fails; a breaking change means publishing a new version
   (`v2.json`) rather than editing the old one.
+
+### Blocking cargo-deny advisories
+
+`rust-ci.yml`'s cargo-deny job fails on a RustSec advisory or a yanked crate
+(it used to warn only). The advisory DB changes daily, so a new advisory
+fails every pull request and push of every repository that calls the
+workflow, until it is handled either way:
+
+- update or replace the crate; or
+- add an entry to deny.toml's `[advisories] ignore`, as an inline table on
+  one line with a `reason`, and an expiry date in the comment above it (or
+  after it on the same line):
+
+  ```toml
+  # rsa: Marvin timing attack; no RSA private-key operations.
+  # expires 2027-05-17
+  { id = "RUSTSEC-2023-0071", reason = "OIDC verifies with public keys only" },
+  ```
+
+`scripts/check-deny-ignores.py` (the `check-ignore-expiry` input, on by
+default) fails an entry with no reason or no `expires YYYY-MM-DD`, or whose
+date has passed, and warns in the last 14 days. An ignore is therefore
+re-read by its date (fix it, remove it, or renew it with a reason) rather
+than forgotten. The comment block above an entry belongs to that entry only:
+entries that share one reason each need their own trailing
+`# expires YYYY-MM-DD`. Ordering: `check-ignore-expiry` defaults to true, so a
+repository that bumps its pin to this workflow while any ignore is undated
+fails its cargo-deny job. It adds the dates first (comments are safe at any
+time, before the bump), or sets `check-ignore-expiry: false` in the bump and
+removes that once the ignores are dated.
+dependency-scan.yml's daily OSV scan keeps reporting advisories between
+pushes.
 
 ### Signing and attesting through Rekor timeouts
 
@@ -101,6 +133,7 @@ counts: it is as valid for that digest as a new one.
 ### Scripts (`scripts/`)
 
 `lint-scripts.py`, `lint-containers.py`, `check-npm-licences.py`,
+`check-deny-ignores.py`,
 `check-commit-identity.py`, `check-licence.py`, `check-bench-gates.py`,
 `paths-changed.py`, `db-tests-passes.py`, `image-labels.py`,
 `openapi-breaking.py`, `gen-rust-dockerfiles.py` and `release-order.py`. They check the

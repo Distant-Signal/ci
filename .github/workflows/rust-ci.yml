@@ -1,7 +1,8 @@
 name: Rust CI
 
 # Reusable: lint, check and test a Rust workspace. Jobs: clippy (both
-# feature sets, -D warnings), the MSRV check, cargo-deny, rustfmt, and
+# feature sets, -D warnings), the MSRV check, cargo-deny (advisories block;
+# ignores need a reason and an expiry date), rustfmt, and
 # build + test (the tests that need no database; see rust-db-tests.yml for
 # the rest).
 #
@@ -57,6 +58,15 @@ on:
         type: string
         required: false
         default: 0.20.2
+      check-ignore-expiry:
+        description: >-
+          Fail when a deny.toml `[advisories] ignore` entry has no reason or
+          no `# expires YYYY-MM-DD` comment, or its date has passed
+          (scripts/check-deny-ignores.py). Set false only while a
+          repository's ignores are being dated.
+        type: boolean
+        required: false
+        default: true
       extra-test-command:
         description: >-
           Run after `cargo test --workspace` in the build-and-test job, from
@@ -147,14 +157,14 @@ jobs:
           MSRV: ${{ inputs.msrv }}
         run: cargo "+${MSRV}" check --workspace --locked --all-features --all-targets
 
-  # cargo-deny with the repository's deny.toml: bans, licenses and sources
-  # block, as does fetching the advisory DB; the advisories check itself
-  # only warns. A crate advisory is a security finding, not a build break,
-  # and dependency-scan.yml's OSV scan already blocks on critical + fixable
-  # RustSec advisories (cargo-deny 0.20, advisories v2, has no severity
-  # threshold to block on). On GitHub a continue-on-error step that fails
-  # still looks green, so the ::warning:: annotation (shown on the run
-  # summary) is the visible signal.
+  # cargo-deny with the repository's deny.toml: bans, licenses, sources and
+  # advisories all block, as does fetching the advisory DB. The RustSec DB
+  # changes daily, so a new advisory fails every pull request and push of
+  # every calling repository until it is dealt with: bump the crate, or add
+  # an `ignore` entry to deny.toml with a `reason` and an `expires
+  # YYYY-MM-DD` comment (the `check-ignore-expiry` step below enforces both,
+  # and fails once the date passes, so no ignore is forgotten). dependency-
+  # scan.yml's OSV scan still reports RustSec advisories on a daily schedule.
   cargo-deny:
     name: cargo deny check
     runs-on: ${{ inputs.runs-on }}
@@ -178,14 +188,36 @@ jobs:
       - name: Fetch the RustSec advisory DB
         run: cargo deny --locked fetch
 
-      - name: cargo deny check advisories (non-blocking)
+      - name: cargo deny check advisories
         id: advisories
-        continue-on-error: true
         run: cargo deny --frozen check advisories
 
-      - name: Report advisory findings
-        if: steps.advisories.outcome == 'failure'
-        run: echo "::warning title=cargo deny advisories (non-blocking)::cargo deny found advisories or yanked crates; see the 'cargo deny check advisories' step."
+      - name: How to handle an advisory
+        if: failure() && steps.advisories.outcome == 'failure'
+        run: >-
+          echo "::error title=cargo deny advisories::A RustSec advisory or
+          yanked crate was found; see the 'cargo deny check advisories' step.
+          Fix it by updating the crate, or, if it can't be fixed yet, add an
+          entry to deny.toml's [advisories] ignore with a reason and a
+          '# expires YYYY-MM-DD' comment."
+
+      # Stdlib Python on the runner, from this workflow's own commit.
+      - name: Fetch Distant-Signal/ci's scripts (this workflow's commit)
+        if: inputs.check-ignore-expiry
+        env:
+          CI_REPOSITORY: ${{ job.workflow_repository }}
+          CI_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/ds-ci"
+          git init -q "${dir}"
+          git -C "${dir}" fetch -q --depth=1 "${GITHUB_SERVER_URL}/${CI_REPOSITORY}.git" "${CI_SHA}"
+          git -C "${dir}" checkout -q FETCH_HEAD
+          echo "DS_CI=${dir}" >> "${GITHUB_ENV}"
+
+      - name: Every advisory ignore has a reason and an unexpired date
+        if: inputs.check-ignore-expiry
+        run: python3 "${DS_CI}/scripts/check-deny-ignores.py"
 
   # Plain `cargo fmt --check`, not Piped's rustfmt.yml, which needs the
   # Piped submodule's justfile.
