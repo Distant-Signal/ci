@@ -162,11 +162,12 @@ and replace the sha after `default.json5#` in each of those files; no other
 line changes. This repository's own `renovate.json5` extends the unpinned
 preset: it is the source, so there is nothing to freeze.
 
-Renovate cannot do this bump itself. Its `renovate-config` manager updates
-a pinned preset only when the pin is a tag (`...default.json5#v1.2.3`,
-through the `github-tags` datasource), never a commit sha. Switching to tags
-would need this repository to cut a semver tag per preset change; until it
-does, the sha pins are bumped by hand as above.
+Renovate does not currently bump this pin itself. Its `renovate-config`
+manager updates a pinned preset only when the pin is a tag
+(`...default.json5#v1.2.3`, through the `github-tags` datasource), as far as
+we know not a commit sha. Switching to tags would need this repository to cut
+a semver tag per preset change; until then, the sha pins are bumped by hand
+as above.
 
 ## Extraction path lists
 
