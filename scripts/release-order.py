@@ -4,7 +4,7 @@
 
   python3 <ci>/scripts/release-order.py [--root DIR] labels [--github-output]
   python3 <ci>/scripts/release-order.py [--root DIR] check --values FILE
-      --registry [--app-version V] [--migrations DIR]
+      --registry [--app-version V] [--migrations DIR] [--grant-floors FILE]
 
 Run from a checkout of this repository at the same commit as the calling
 repository's Distant-Signal/ci workflow pins; --root (default: the working
@@ -64,6 +64,19 @@ tag, else --app-version; anonymously, as the cluster pulls) and checks:
      crates/ds-store/migrations, i.e. ds-core's own): ds-deploy passes a
      checkout of the ds-core release the chart pins, which the pinned
      ds-migrate carries.
+
+  4. grants: a service whose role lost a grant it used to hold (a role
+     taken out of `read_shared`, say) needs an image built against the core
+     that took it away, or it fails its schema gate on restart. The
+     --grant-floors TOML lists them:
+       [[floor]]
+       service = "notifier"
+       core = "v0.16.0"
+       reason = "ds-core#83 takes the notifier out of read_shared"
+     Once the pinned ds-migrate's core-version (the schema and grants the
+     chart applies) is at least `core`, that service's pinned image must
+     carry a core-version of at least `core` too. A service the values do
+     not pin is ignored.
 
 It also checks each image's source: the repository the chart's
 `/public/version` names for it (its `image.source`, else `sourceCode.url`;
@@ -310,6 +323,39 @@ def leading_comments(sql: str) -> Iterator[str]:
         yield line
 
 
+@dataclass(frozen=True)
+class GrantFloor:
+    """A service whose image needs a core at least this new once the grants change."""
+
+    service: str
+    core: Version
+    reason: str
+
+
+def grant_floors(path: Path) -> list[GrantFloor]:
+    """Return the `[[floor]]` entries of the --grant-floors TOML."""
+    try:
+        data = tomllib.loads(path.read_text("utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        msg = f"{path}: {error}"
+        raise InputError(msg) from error
+    floors: list[GrantFloor] = []
+    for entry in data.get("floor", []):
+        service, core = entry.get("service"), entry.get("core")
+        version = parse_version(core) if isinstance(core, str) else None
+        if (
+            not isinstance(service, str)
+            or version is None
+            or version.scheme != "semver"
+        ):
+            msg = (
+                f'{path}: each [[floor]] needs a service and a core = "vX.Y.Z": {entry}'
+            )
+            raise InputError(msg)
+        floors.append(GrantFloor(service, version, str(entry.get("reason", ""))))
+    return floors
+
+
 # --- the checks -----------------------------------------------------------
 
 
@@ -429,11 +475,37 @@ class Checker:
                     "it may still use what the migration drops (spec §5.1, contract)"
                 )
 
+    def grants(self, floor: GrantFloor) -> None:
+        """Rule 4: past FLOOR's core, its service's image is built against it."""
+        migrate = self.by_service.get(MIGRATE)
+        carried = self.cores.get(migrate.path) if migrate is not None else None
+        image = self.by_service.get(floor.service)
+        if carried is None or image is None:
+            return
+        mine = self.cores.get(image.path)
+        if mine is None:
+            return
+        if not carried.comparable(floor.core) or not mine.comparable(floor.core):
+            self.findings.append(
+                f"::error::grant floor for {floor.service} (core {floor.core.text}) "
+                f"doesn't order against {MIGRATE} {carried.text} or "
+                f"{image.path}'s core-version {mine.text}"
+            )
+        elif carried >= floor.core and mine < floor.core:
+            self.findings.append(
+                f"::error::the pinned {MIGRATE} ({carried.text}) applies grants that "
+                f"need {floor.service} built against core {floor.core.text} "
+                f"({floor.reason or 'grant floor'}), but {image.path} is built "
+                f"against {mine.text}: it would fail its schema gate on restart "
+                "(spec §5.1, grants)"
+            )
+
 
 def check(
     images: Sequence[Pinned],
     labels_of: Callable[[Pinned], Mapping[str, str]],
     floors: Sequence[tuple[str, Version]],
+    grant_floors_: Sequence[GrantFloor] = (),
 ) -> list[str]:
     """Return every ordering finding, as `::error::` lines."""
     checker = Checker(images, labels_of)
@@ -441,6 +513,8 @@ def check(
     checker.api_build()
     for migration, floor in floors:
         checker.contract(migration, floor)
+    for grant in grant_floors_:
+        checker.grants(grant)
     return checker.findings
 
 
@@ -582,7 +656,8 @@ def run_check(args: argparse.Namespace, fetch: Fetch = http_fetch) -> int:
 
     migrations = args.migrations or args.root / MIGRATIONS
     floors, problems = contract_floors(args.root, migrations)
-    findings = problems + check(images, labels_of, floors)
+    grants = grant_floors(args.grant_floors) if args.grant_floors else []
+    findings = problems + check(images, labels_of, floors, grants)
     findings += source_findings(images, labels_of)
     for finding in findings:
         print(finding)
@@ -591,7 +666,8 @@ def run_check(args: argparse.Namespace, fetch: Fetch = http_fetch) -> int:
     print(
         f"release ordering holds for {len(images)} pinned image(s) (the "
         "registry's labels, and each image's source; "
-        f"{len(floors)} versioned contract migration(s))"
+        f"{len(floors)} versioned contract migration(s), "
+        f"{len(grants)} grant floor(s))"
     )
     return 0
 
@@ -623,6 +699,12 @@ def main(argv: Sequence[str] | None = None, fetch: Fetch = http_fetch) -> int:
         help="the migrations whose contract headers rule 3 reads (default: "
         "the root's crates/ds-store/migrations; ds-deploy passes a checkout "
         "of the ds-core release it pins)",
+    )
+    checks.add_argument(
+        "--grant-floors",
+        type=Path,
+        help="TOML of [[floor]] service/core entries rule 4 reads (see the "
+        "module docstring); ds-deploy keeps it beside its values",
     )
     args = parser.parse_args(argv)
     try:

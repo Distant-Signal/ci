@@ -581,6 +581,142 @@ class RegistryTest(unittest.TestCase):
             ro.with_retries("ghcr.io/distant-signal/images/api:nope", FakeRegistry({}))
 
 
+def grant_floor(service: str, core: str) -> Any:  # noqa: ANN401  # the loaded module's GrantFloor
+    """Return a grant floor for SERVICE at CORE."""
+    return ro.GrantFloor(service, version(core), "the role left read_shared")
+
+
+class GrantFloorTest(unittest.TestCase):
+    """Rule 4: an image must be built against the core that narrowed its grants."""
+
+    def findings(
+        self,
+        floor: Any,  # noqa: ANN401  # the loaded module's GrantFloor
+        overrides: Mapping[str, Mapping[str, str | None]] | None = None,
+    ) -> list[str]:
+        """`check` with this grant floor."""
+        labels = labels_by_service(overrides)
+        return list(
+            ro.check(fixture_images(), lambda image: labels[image.service], [], [floor])
+        )
+
+    def test_image_at_the_floor_passes(self) -> None:
+        """Migrate and the service both at the floor: no finding."""
+        self.assertEqual(self.findings(grant_floor("aggregator", "v1.0.0")), [])
+
+    def test_old_image_with_the_grants_vendored_fails(self) -> None:
+        """Migrate carries the narrowed grants, the image is older: a finding."""
+        findings = self.findings(
+            grant_floor("aggregator", "v0.9.5"), {"aggregator": {CORE: "v0.9.0"}}
+        )
+        self.assertEqual(len(findings), 1, findings)
+        for part in (
+            "ds-migrate (v1.0.0)",
+            "aggregator",
+            "v0.9.5",
+            "v0.9.0",
+            "schema gate",
+        ):
+            self.assertIn(part, findings[0])
+
+    def test_floor_not_yet_vendored_passes(self) -> None:
+        """Migrate still before the floor: the old image is fine."""
+        findings = self.findings(
+            grant_floor("aggregator", "v1.1.0"), {"aggregator": {CORE: "v0.9.0"}}
+        )
+        self.assertEqual(findings, [])
+
+    def test_unpinned_service_is_ignored(self) -> None:
+        """A floor for a service the values do not pin adds nothing."""
+        self.assertEqual(self.findings(grant_floor("notifier", "v0.9.5")), [])
+
+    def test_unordered_schemes_are_a_finding(self) -> None:
+        """A build-tag core label can not be compared with a semver floor."""
+        findings = self.findings(
+            grant_floor("aggregator", "v0.9.5"),
+            {"aggregator": {CORE: "build.7-0123abc"}},
+        )
+        self.assertTrue(any("don't order" in f for f in findings), findings)
+
+
+class GrantFloorsFileTest(unittest.TestCase):
+    """Reading the --grant-floors TOML."""
+
+    @override
+    def setUp(self) -> None:
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
+
+    def write(self, text: str) -> Path:
+        """Write the floors file."""
+        path = self.dir / "grant-floors.toml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_reads_floors(self) -> None:
+        """Each [[floor]] becomes a GrantFloor."""
+        floors = ro.grant_floors(
+            self.write(
+                '[[floor]]\nservice = "notifier"\ncore = "v0.16.0"\nreason = "r"\n'
+            )
+        )
+        self.assertEqual(len(floors), 1)
+        self.assertEqual(floors[0].service, "notifier")
+        self.assertEqual(floors[0].core.text, "v0.16.0")
+        self.assertEqual(floors[0].reason, "r")
+
+    def test_rejects_a_bad_version_or_syntax(self) -> None:
+        """A floor needs a vX.Y.Z core; broken TOML is an input error."""
+        with self.assertRaises(ro.InputError):
+            ro.grant_floors(
+                self.write('[[floor]]\nservice = "a"\ncore = "build.1-abcdef0"\n')
+            )
+        with self.assertRaises(ro.InputError):
+            ro.grant_floors(self.write("[[floor"))
+        with self.assertRaises(ro.InputError):
+            ro.grant_floors(self.dir / "missing.toml")
+
+    def test_cli_fails_on_a_violated_floor(self) -> None:
+        """--grant-floors fails the check for an old image, passes for a current one."""
+        images = fixture_images()
+        labels = labels_by_service({"aggregator": {CORE: "v0.9.0"}})
+        for image in images:
+            labels[image.service][ro.SOURCE] = image.source
+        configs = {image.reference("x"): labels[image.service] for image in images}
+
+        def fake(reference: str, _fetch: object) -> dict[str, str]:
+            return configs[reference]
+
+        argv = [
+            "--root",
+            str(FIXTURES),
+            "check",
+            "--values",
+            str(FIXTURES / "values.json"),
+            "--registry",
+            "--app-version",
+            "x",
+        ]
+        floors = self.write('[[floor]]\nservice = "aggregator"\ncore = "v0.9.5"\n')
+        out = io.StringIO()
+        with (
+            mock.patch.object(ro, "with_retries", fake),
+            contextlib.redirect_stdout(out),
+        ):
+            status = ro.main([*argv, "--grant-floors", str(floors)])
+        self.assertEqual(status, 1)
+        self.assertIn("would fail its schema gate", out.getvalue())
+        labels["aggregator"][CORE] = "v1.0.0"
+        out = io.StringIO()
+        with (
+            mock.patch.object(ro, "with_retries", fake),
+            contextlib.redirect_stdout(out),
+        ):
+            status = ro.main([*argv, "--grant-floors", str(floors)])
+        self.assertEqual(status, 0, out.getvalue())
+        self.assertIn("1 grant floor(s)", out.getvalue())
+
+
 class MainTest(unittest.TestCase):
     """The CLI."""
 
