@@ -83,8 +83,13 @@ workflow, until it is handled either way:
 default) fails an entry with no reason or no `expires YYYY-MM-DD`, or whose
 date has passed, and warns in the last 14 days. An ignore is therefore
 re-read by its date (fix it, remove it, or renew it with a reason) rather
-than forgotten. A repository adopting this pin adds the dates first (comments
-are safe at any time), or sets `check-ignore-expiry: false` meanwhile.
+than forgotten. The comment block above an entry belongs to that entry only:
+entries that share one reason each need their own trailing
+`# expires YYYY-MM-DD`. Ordering: `check-ignore-expiry` defaults to true, so a
+repository that bumps its pin to this workflow while any ignore is undated
+fails its cargo-deny job. It adds the dates first (comments are safe at any
+time, before the bump), or sets `check-ignore-expiry: false` in the bump and
+removes that once the ignores are dated.
 dependency-scan.yml's daily OSV scan keeps reporting advisories between
 pushes.
 
