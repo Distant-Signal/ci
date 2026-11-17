@@ -132,11 +132,12 @@ uv run python /path/to/Distant-Signal/ci/scripts/lint-scripts.py
 
 ### Renovate preset
 
-`renovate/default.json5`, extended by every repository:
+`renovate/default.json5`, extended by every repository, pinned to a commit
+of this repository:
 
 ```json5
 {
-  "extends": ["github>Distant-Signal/ci//renovate/default.json5"],
+  "extends": ["github>Distant-Signal/ci//renovate/default.json5#<full commit sha>"],
 }
 ```
 
@@ -149,6 +150,23 @@ in workflow inputs. Each repository keeps only its local rules. It must stay
 usable by the hosted Renovate app: no private presets, registries or
 `postUpgradeTasks`. The app is installed but not running yet; until it is,
 dependency and image bumps are made by hand.
+
+#### Bumping the pin
+
+A change to the preset reaches a repository only when that repository's
+`renovate.json5` moves the sha, so each preset change needs one small PR per
+repository: ds-api, ds-core, ds-ingest, ds-workers, ds-pollers, ds-deploy
+and distant-signal. After the preset change merges here, take the new
+`main` sha (`gh api repos/Distant-Signal/ci/branches/main --jq .commit.sha`)
+and replace the sha after `default.json5#` in each of those files; no other
+line changes. This repository's own `renovate.json5` extends the unpinned
+preset: it is the source, so there is nothing to freeze.
+
+Renovate cannot do this bump itself. Its `renovate-config` manager updates
+a pinned preset only when the pin is a tag (`...default.json5#v1.2.3`,
+through the `github-tags` datasource), never a commit sha. Switching to tags
+would need this repository to cut a semver tag per preset change; until it
+does, the sha pins are bumped by hand as above.
 
 ## Extraction path lists
 
