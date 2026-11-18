@@ -89,7 +89,7 @@ on:
         description: The pushed chart's repository (ghcr.io/<owner>/<registry-path>/<name>); empty unless published.
         value: ${{ jobs.chart.outputs.ref }}
       digest:
-        description: The pushed chart's digest (sign this, never a tag); empty unless published.
+        description: The pushed chart's manifest digest, as the registry reports it for the version's tag (sign this, never a tag); empty unless published.
         value: ${{ jobs.chart.outputs.digest }}
       version:
         description: The packaged chart version; empty unless published.
@@ -153,6 +153,30 @@ jobs:
           ACTOR: ${{ github.actor }}
         run: echo "${TOKEN}" | helm registry login ghcr.io --username "${ACTOR}" --password-stdin
 
+      # This workflow's scripts, from its own commit, outside the workspace.
+      - name: Fetch Distant-Signal/ci's scripts (this workflow's commit)
+        if: inputs.publish
+        env:
+          CI_REPOSITORY: ${{ job.workflow_repository }}
+          CI_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/ds-ci"
+          git init -q "${dir}"
+          git -C "${dir}" fetch -q --depth=1 "${GITHUB_SERVER_URL}/${CI_REPOSITORY}.git" "${CI_SHA}"
+          git -C "${dir}" checkout -q FETCH_HEAD
+          echo "DS_CI=${dir}" >> "${GITHUB_ENV}"
+
+      # scripts/helm-push.py pushes with up to three attempts (5 s and 15 s
+      # between them), retrying only after a registry or transport fault
+      # (GHCR now and then 404s the manifest `helm push` has just written,
+      # when it goes to tag it: ds-deploy's runs of 2026-11-14 and 11-17,
+      # four times). It reads the tag back with `helm pull` before every
+      # attempt and after the push: the same chart already under the tag
+      # counts as pushed, a different one fails the step (build versions are
+      # immutable). The `digest` output is what the registry holds under the
+      # tag, never only what `helm push` printed. Retries are warning
+      # annotations and rows of the job summary.
       - name: helm package and push
         id: push
         if: inputs.publish
@@ -173,14 +197,5 @@ jobs:
           helm package "${CHART}" "${args[@]}"
           name="$(sed -n 's/^name: *"\?\([^"[:space:]]*\)"\?.*/\1/p' "${CHART}/Chart.yaml")"
           chart_tgz="$(find "${out}" -maxdepth 1 -name "${name}-*.tgz" -print -quit)"
-          helm push "${chart_tgz}" "oci://${dest}" 2>&1 | tee "${RUNNER_TEMP}/helm-push.log"
-          # `helm push` reports "Digest: sha256:..."; sign that, never a tag.
-          digest="$(sed -n 's/^Digest: *\(sha256:[0-9a-f]\{64\}\).*/\1/p' "${RUNNER_TEMP}/helm-push.log" | head -n 1)"
-          if [[ -z "${digest}" ]]; then
-            echo "::error::could not read the pushed chart's digest from helm push's output" >&2
-            exit 1
-          fi
-          {
-            echo "ref=${dest}/${name}"
-            echo "digest=${digest}"
-          } >> "${GITHUB_OUTPUT}"
+          python3 "${DS_CI}/scripts/helm-push.py" --chart "${chart_tgz}" \
+            --registry "oci://${dest}" --name "${name}" --version "${VERSION}"
