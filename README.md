@@ -34,7 +34,7 @@ Each check shows as `<calling job> / <job in the reusable workflow>`, e.g.
 | `rust-db-tests.yml` | builds the DB test archive once, then one job per pass against its own Postgres and Redis | The archive command and the passes come from the repository's `.github/db-tests.toml` (format in `scripts/db-tests-passes.py`). The service images are inputs. |
 | `node-ci.yml` | `npm ci`, ESLint, the npm licence gate, Prettier, `tsc --noEmit`, extra npm scripts, `npm test`, `npm run build` | |
 | `image.yml` | builds one image; when publishing, pushes it to `ghcr.io/<owner>/images/<service>`, attests provenance, signs and verifies it and records its digest | Call it from a matrix. Reproducible digests, registry layer cache. Extra labels through the `labels` input. Signing and attesting survive Rekor timeouts (below). |
-| `helm-chart.yml` | lints a chart; when publishing, packages it as `<version>+build.<run>.sha.<sha>` and pushes it to `ghcr.io/<owner>/charts` | Doesn't sign: sign in your own job (below). |
+| `helm-chart.yml` | lints a chart; when publishing, packages it as `<version>+build.<run>.sha.<sha>` and pushes it to `ghcr.io/<owner>/charts` | Doesn't sign: sign in your own job (below). The push (`scripts/helm-push.py`) retries registry faults up to three times, reads the tag back, passes when the tag already holds the same chart, fails on a different one, and outputs the digest the registry holds. |
 | `scripts-lint.yml` | shellcheck, shfmt, ruff, mypy, actionlint, hadolint and `lint-containers.py`, then the script tests | Runs in the calling repository's uv project: it keeps its own `lint` dependency group, `uv.lock` and ruff/mypy settings. |
 | `dependency-scan.yml` | OSV-Scanner over every lockfile, blocking on critical and fixable findings; a tracking issue on the schedule | `repository` and `report: true` scan another public repository and file its tracking issue in the caller (distant-signal's daily scan of every repository). |
 | `identity.yml` | commits use the current identity, without AI attribution | §5.10 |
@@ -139,6 +139,8 @@ counts: it is as valid for that digest as a new one.
 `openapi-breaking.py`, `gen-rust-dockerfiles.py` and `release-order.py`. They check the
 repository they are run from (the working directory), not this one.
 `sigstore-retry.py` is the signing and attestation retry logic (above).
+`helm-push.py` is `helm-chart.yml`'s retried, idempotent chart push (tested
+with a fake registry).
 
 `gen-rust-dockerfiles.py` writes (and with `--check` verifies) the
 cargo-chef builder stages of a Rust repository's `docker/<service>.Dockerfile`
