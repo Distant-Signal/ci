@@ -26,9 +26,13 @@ name: Rust CI
 # Caches: only the default branch writes them (`save-if`). A pull request's
 # save could only ever be restored by later runs of that same pull request,
 # and the 10 GB Actions cache was over its cap evicting main's entries for
-# them. Pull requests still restore main's. clippy and msrv share one entry
-# (same toolchain and dependency builds: clippy-driver only wraps the
-# workspace crates).
+# them. Pull requests still restore main's. A key is `v0-rust-<shared-key>-
+# <rustc and CARGO_*/RUSTFLAGS hash>-<Cargo.lock hash>`: no commit or run id,
+# but every Cargo.lock change on main writes a new entry per job class, and
+# the old ones age out by LRU. clippy and msrv share a shared-key name but
+# not entries (the rustc version is in the hash), so a toolchain bump makes
+# every entry new once. Nothing is saved when a job fails, and only
+# third-party crates are cached (the defaults, spelled out).
 
 on:
   workflow_call:
@@ -70,8 +74,8 @@ on:
       extra-test-command:
         description: >-
           Run after `cargo test --workspace` in the build-and-test job, from
-          the repository root (e.g. a fast data validator built by the same
-          `cargo build`). Empty: nothing.
+          the repository root (e.g. a fast data validator: `cargo run -p
+          <crate>` builds what it needs). Empty: nothing.
         type: string
         required: false
         default: ""
@@ -117,6 +121,8 @@ jobs:
         with:
           shared-key: check-all-features
           save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          cache-all-crates: false
+          cache-on-failure: false
 
       - name: cargo clippy (all features)
         run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
@@ -151,6 +157,8 @@ jobs:
         with:
           shared-key: check-all-features
           save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          cache-all-crates: false
+          cache-on-failure: false
 
       - name: cargo +${{ inputs.msrv }} check
         env:
@@ -239,9 +247,24 @@ jobs:
 
   # The tests that need no database. The DATABASE_URL/REDIS_URL-gated
   # `#[ignore]`d ones run in rust-db-tests.yml, in parallel.
+  #
+  # No separate `cargo build --workspace`: `cargo test --workspace` compiles
+  # every library, every binary (as its unit-test harness, and normally for
+  # integration tests) and every example, and the build step recompiled the
+  # dependencies whose features differ between the two (dev-dependencies add
+  # features). clippy and the MSRV check type-check every target
+  # (`--all-targets`), so a binary that no longer compiles still fails a
+  # pull request; only linking a binary nothing tests is left to the image
+  # builds. The job keeps its name: branch protection requires it.
   rust-test:
     name: cargo build & test
     runs-on: ${{ inputs.runs-on }}
+    env:
+      # No debuginfo, as in rust-db-tests.yml: a failing test's panic message
+      # still names its file:line; only a backtrace loses them. It shrinks
+      # the cached target directory (the largest Actions cache entry in each
+      # repository) and the link time.
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -264,9 +287,8 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-
-      - name: cargo build --workspace
-        run: cargo build --workspace
+          cache-all-crates: false
+          cache-on-failure: false
 
       - name: cargo test --workspace (ignored tests skipped)
         run: cargo test --workspace
